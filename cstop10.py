@@ -129,7 +129,12 @@ def _sections(text: str) -> dict:
     m = re.search(r"🕒 (.+?)(?:\n|$)", text)
     if m: out["when"] = m.group(1).strip()
     m = re.search(r"</a>\s*-\s*(.+?)(?:\n|$)", text)
-    if m: out["source"] = m.group(1).strip()
+    if m:
+        src = m.group(1).strip()
+        # "한화 금융계열사(비즈니스포스트)" 처럼 내부 수집기 이름이 앞에 붙는다.
+        # 독자에게 필요한 건 매체명뿐이다.
+        mm = re.match(r"^.+?\((.+)\)$", src)
+        out["source"] = (mm.group(1) if mm else src).strip()
     return out
 
 
@@ -145,10 +150,12 @@ def render_item(r, *, lede=120, bullets=3, blen=58, why=130) -> str:
     """
     e = html.escape
     sec = _sections(r[K_TEXT] if len(r) > K_TEXT else "")
-    icon = (topics.display_name(r[K_PRI] or "") or " ").split()[0]
+    cat = topics.display_name(r[K_PRI] or "") or ""
     tag = " · 홍보" if csfit.is_pr(r[K_HEAD] or "") else ""
 
-    parts = [f'{icon} <a href="{e(r[K_URL] or "")}"><b>{e(r[K_HEAD] or "")}</b></a>{tag}']
+    # 탭 이름을 그대로 붙인다(아이콘 포함). 어느 카테고리인지 한눈에 보여야 한다.
+    parts = [f"<b>[{e(cat)}]</b>{tag}",
+             f'<a href="{e(r[K_URL] or "")}"><b>{e(r[K_HEAD] or "")}</b></a>']
 
     ld = sec["lede"] or (r[K_LEDE] or "")
     if ld:
@@ -246,6 +253,8 @@ async def run(client, store, dry_run: bool | None = None) -> int | None:
     first = None
     for i, m in enumerate(msgs):
         mid = await publisher.send_raw(client, m, thread)
+        # 발행분을 기록해 둔다 — 나중에 이 메시지만 골라 지울 수 있게.
+        store.record_agg_message("cs_top10", until + i, mid)
         first = first or mid
         if i < len(msgs) - 1:
             await asyncio.sleep(0.6)

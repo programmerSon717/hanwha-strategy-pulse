@@ -227,6 +227,15 @@ def test_cstop10():
     out = cstop10.render_item(r)
     check("순위 번호 없음", out.lstrip().startswith("<b>1"), False)
     check("제목이 링크", '<a href="http://x"><b>제목</b></a>' in out, True)
+    # 카테고리 라벨 (2026-10-01 사용자 지정) — 어느 탭인지 한눈에 보여야 한다
+    check("카테고리 라벨", "<b>[🏢 한화그룹]</b>" in out, True)
+    # 출처는 매체명만. "한화 금융계열사(비즈니스포스트)" 같은 내부 수집기 이름을 떼낸다
+    r3 = row("v", "제목", "한화생명", 90,
+             f"<b>{settings.bot_name}</b>\n\n🏢 <b>제목</b>\n\n"
+             '🕒 2026-10-01 15:45 KST\n\n<a href="http://x">기사 원문</a> - 한화 금융계열사(비즈니스포스트)')
+    out3 = cstop10.render_item(r3)
+    check("출처는 매체명만", "· 비즈니스포스트" in out3, True)
+    check("수집기 이름 제거", "한화 금융계열사(" in out3, False)
     check("핵심 유지", "✅ 요약문입니다" in out, True)
     check("불릿 유지", "• 불릿1" in out, True)
     check("불릿 상한 3개", "• 불릿4" in out, False)

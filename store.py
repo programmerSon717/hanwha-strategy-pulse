@@ -431,6 +431,34 @@ class Store:
             ).fetchone()
         return row[0] if row else None
 
+    def record_agg_message(self, scope: str, ts: float, message_id: int | None):
+        """집계 탭(🚨·☀️·📌) 발행분의 message_id 를 남긴다.
+
+        **왜 남기나.** 2026-10-01 에 📌 경전실 Top10 테스트 발행을 지우려다
+        message_id 가 없어 탭을 통째로 삭제·재생성해야 했다. thread_id 가 바뀌어
+        .env·topics.json·GitHub Secret 을 전부 고쳐야 했다. 기록해 두면
+        해당 메시지만 지우면 된다.
+        """
+        if message_id is None:
+            return
+        with self._conn() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO digest_log (scope, window_end, message_id)"
+                " VALUES (?, ?, ?)", (f"msg:{scope}", ts, message_id))
+
+    def agg_messages(self, scope: str, limit: int = 50) -> list[tuple]:
+        """해당 집계 탭이 발행한 (시각, message_id) 목록. 최신순."""
+        with self._conn() as c:
+            return c.execute(
+                "SELECT window_end, message_id FROM digest_log"
+                " WHERE scope=? ORDER BY window_end DESC LIMIT ?",
+                (f"msg:{scope}", limit)).fetchall()
+
+    def forget_agg_message(self, scope: str, message_id: int):
+        with self._conn() as c:
+            c.execute("DELETE FROM digest_log WHERE scope=? AND message_id=?",
+                      (f"msg:{scope}", message_id))
+
     def last_pr_pick(self) -> float | None:
         """📌 경전실 Top10 에 홍보성 기사를 마지막으로 실은 시각. 없으면 None.
 
