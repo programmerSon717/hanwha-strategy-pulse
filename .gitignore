@@ -28,3 +28,5 @@ botstate.sqlite3.bak.*
 HANDOFF.local*
 # 크립토 봇 시절 원본 백업 — .md 확장자가 붙은 것까지 전부
 *.crypto.bak.md
+# 크립토 시절 DB 원본 — 커밋하지 않는다
+botstate.sqlite3.crypto-era.bak
