@@ -216,25 +216,46 @@ def test_cstop10():
     picked = cstop10.select(rows, count=10, store=S(None), now=now)
     check("홍보성은 맨 아래", csfit.is_pr(picked[-1][1][1]), True)
 
-    # 발행 원문 재사용 — 봇 이름 줄을 떼고 순위 줄로 바꾼다.
+    # 발행 원문에서 섹션을 뜯어 압축 렌더
     from config import settings
     orig = (f"<b>{settings.bot_name}</b>\n\n🏢 <b>제목</b>\n\n"
-            "✅ <b>핵심</b>\n요약문\n\n📂 <b>주요 내용</b>\n"
-            "<blockquote>• 불릿1\n• 불릿2</blockquote>\n\n"
-            "💡 <b>Why it matters</b>\n왜 중요한가\n\n🕒 2026-10-01 15:45 KST")
+            "✅ <b>핵심</b>\n요약문입니다\n\n📂 <b>주요 내용</b>\n"
+            "<blockquote>• 불릿1\n• 불릿2\n• 불릿3\n• 불릿4</blockquote>\n\n"
+            "💡 <b>Why it matters</b>\n왜 중요한가\n\n🕒 2026-10-01 15:45 KST\n\n"
+            '<a href="http://x">기사 원문</a> - 보험저널\n\n#태그1 #태그2')
     r = row("z", "제목", "한화생명", 90, orig)
-    out = cstop10.render_item(1, 90, r, 10)
-    check("순위 줄이 맨 앞", out.startswith("<b>1/10."), True)
-    check("봇 이름 줄 제거", settings.bot_name not in out, True)
-    check("주요 내용 불릿 유지", "<blockquote>• 불릿1" in out, True)
-    check("핵심 섹션 유지", "✅ <b>핵심</b>" in out, True)
-    check("영문 라벨은 펭귄으로", "Why it matters" in out, False)
-    check("펭귄 있음", "🐧 왜 중요한가" in out, True)
-    check("발행시각 유지", "🕒 2026-10-01 15:45 KST" in out, True)
+    out = cstop10.render_item(r)
+    check("순위 번호 없음", out.lstrip().startswith("<b>1"), False)
+    check("제목이 링크", '<a href="http://x"><b>제목</b></a>' in out, True)
+    check("핵심 유지", "✅ 요약문입니다" in out, True)
+    check("불릿 유지", "• 불릿1" in out, True)
+    check("불릿 상한 3개", "• 불릿4" in out, False)
+    check("펭귄", "🐧 왜 중요한가" in out, True)
+    check("영문 라벨 없음", "Why it matters" in out, False)
+    check("시각·매체 한 줄", "🕒 2026-10-01 15:45 KST · 보험저널" in out, True)
+    check("해시태그 제외", "#태그1" in out, False)
 
-    # 원문이 없는 옛 행도 깨지지 않는다
-    out2 = cstop10.render_item(2, 50, row("y", "옛제목", "한화생명", 50), 10)
-    check("원문 없어도 렌더", "옛제목" in out2, True)
+    # 길이 계산은 **보이는 텍스트** 기준이어야 한다. 긴 URL 에 속으면 안 된다.
+    long_url = "http://x/" + "a" * 500
+    r2 = row("w", "제목", "한화생명", 90,
+             f'<b>{settings.bot_name}</b>\n\n🏢 <b>제목</b>\n\n'
+             f'<a href="{long_url}">기사 원문</a> - 보험저널')
+    item = cstop10.render_item(r2)
+    check("URL 은 길이에 안 센다", cstop10.visible_len(item) < 100, True)
+
+    # 한 판 — 10건이 한 메시지에 들어가야 한다
+    many = [(90, row(f"k{i}", f"제목{i}", "한화생명", 90, orig)) for i in range(10)]
+    msgs = cstop10.render_all(many, "2026.10.01 Thu")
+    check("한 메시지로", len(msgs), 1)
+    check("상한 이내", cstop10.visible_len(msgs[0]) <= cstop10.SAFE_LIMIT, True)
+
+    # 아주 길면 그때만 나눈다
+    huge = orig.replace("요약문입니다", "요" * 400).replace("왜 중요한가", "왜" * 400)
+    many2 = [(90, row(f"h{i}", f"제목{i}", f"회사{i}", 90, huge)) for i in range(40)]
+    msgs2 = cstop10.render_all(many2, "2026.10.01 Thu")
+    check("넘치면 분할", len(msgs2) > 1, True)
+    check("분할 조각도 상한 이내",
+          all(cstop10.visible_len(m) <= cstop10.SAFE_LIMIT for m in msgs2), True)
 
 
 def test_source_weight():
