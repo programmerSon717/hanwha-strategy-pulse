@@ -188,9 +188,9 @@ def test_cstop10():
     check("한화 기사가 더 높다", hanwha > other, True)
 
     # 홍보성 쿼터 — 이틀에 한 건
-    def row(k, head, ent, sc):
+    def row(k, head, ent, sc, text=""):
         return (k, head, "http://x", "hanwha_group", "", sc, 0, None, ent,
-                "요약", "왜", time.time(), "other", time.time())
+                "요약", "왜", time.time(), "other", time.time(), text)
     rows = [row("a", "한화손보, 최고령 설계사 헌정식", "한화손해보험", 60),
             row("b", "한화큐셀, 영농형태양광 업무협약", "한화큐셀", 55),
             row("c", "한화생명, 애큐온캐피탈 인수 의결", "한화생명", 92)]
@@ -215,6 +215,26 @@ def test_cstop10():
     # 홍보성은 맨 아래
     picked = cstop10.select(rows, count=10, store=S(None), now=now)
     check("홍보성은 맨 아래", csfit.is_pr(picked[-1][1][1]), True)
+
+    # 발행 원문 재사용 — 봇 이름 줄을 떼고 순위 줄로 바꾼다.
+    from config import settings
+    orig = (f"<b>{settings.bot_name}</b>\n\n🏢 <b>제목</b>\n\n"
+            "✅ <b>핵심</b>\n요약문\n\n📂 <b>주요 내용</b>\n"
+            "<blockquote>• 불릿1\n• 불릿2</blockquote>\n\n"
+            "💡 <b>Why it matters</b>\n왜 중요한가\n\n🕒 2026-10-01 15:45 KST")
+    r = row("z", "제목", "한화생명", 90, orig)
+    out = cstop10.render_item(1, 90, r, 10)
+    check("순위 줄이 맨 앞", out.startswith("<b>1/10."), True)
+    check("봇 이름 줄 제거", settings.bot_name not in out, True)
+    check("주요 내용 불릿 유지", "<blockquote>• 불릿1" in out, True)
+    check("핵심 섹션 유지", "✅ <b>핵심</b>" in out, True)
+    check("영문 라벨은 펭귄으로", "Why it matters" in out, False)
+    check("펭귄 있음", "🐧 왜 중요한가" in out, True)
+    check("발행시각 유지", "🕒 2026-10-01 15:45 KST" in out, True)
+
+    # 원문이 없는 옛 행도 깨지지 않는다
+    out2 = cstop10.render_item(2, 50, row("y", "옛제목", "한화생명", 50), 10)
+    check("원문 없어도 렌더", "옛제목" in out2, True)
 
 
 def test_source_weight():

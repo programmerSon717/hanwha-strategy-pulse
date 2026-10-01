@@ -18,7 +18,7 @@ KST = timezone(timedelta(hours=9))
 # brief_candidates 컬럼 순서
 K_KEY, K_HEAD, K_URL, K_PRI, K_SEC, K_SCORE = 0, 1, 2, 3, 4, 5
 K_ISKEY, K_CLUSTER, K_ENT, K_LEDE, K_WHY, K_SENT = 6, 7, 8, 9, 10, 11
-K_ETYPE, K_ORIGIN = 12, 13          # origin_at = 기사 자체의 발행시각
+K_ETYPE, K_ORIGIN, K_TEXT = 12, 13, 14   # origin_at=기사 발행시각, text=발행 원문
 
 # 홍보성 기사를 다시 실을 수 있게 되기까지의 간격 (2026-10-01 사용자 지정: 이틀)
 PR_INTERVAL_SEC = 2 * 24 * 3600
@@ -100,33 +100,63 @@ def _ts(v) -> float | None:
     return f if f > 0 else None
 
 
-def render(picked: list, label: str) -> str:
+def render_header(picked: list, label: str) -> str:
     e = html.escape
-    parts = [f"📌 <b>{e(settings.bot_name)} | 경전실 Top10</b>", "", e(label), ""]
-    for i, (s, r) in enumerate(picked, 1):
-        tag = " · 홍보" if csfit.is_pr(r[K_HEAD] or "") else ""
-        parts.append(f"<b>{i}. [{e(topics.display_name(r[K_PRI] or ''))}]{tag}</b>")
-        parts.append(f'<a href="{e(r[K_URL] or "")}">{e(r[K_HEAD] or "")}</a>')
+    n_pr = sum(1 for _, r in picked if csfit.is_pr(r[K_HEAD] or ""))
+    line = f"{len(picked)}건"
+    if n_pr:
+        line += f" (홍보 {n_pr}건 포함)"
+    return "\n".join([
+        f"📌 <b>{e(settings.bot_name)} | 경전실 Top10</b>", "",
+        e(label), "", e(line),
+    ])
 
-        # 주요 내용 — 모델이 쓴 1~2문장 요약
-        lede = (r[K_LEDE] or "").strip()
-        if lede:
-            parts.append(f"✅ {e(lede[:170])}")
 
-        why = (r[K_WHY] or "").strip()
-        if why:
-            parts.append(f"🐧 {e(why[:150])}")
+def render_item(rank: int, score: int, r, picked_len: int) -> str:
+    """개별 기사 1건. **발행 당시 원문을 그대로 재사용한다.**
 
-        # 기사 자체의 발행시각. 없으면 봇이 받은 시각으로 대체한다.
-        # origin_at 은 행에 따라 TEXT 로 들어 있어 float 변환이 필요하다.
-        ts = _ts(r[K_ORIGIN] if len(r) > K_ORIGIN else None) or _ts(r[K_SENT])
-        if ts:
-            parts.append(f"🕒 {datetime.fromtimestamp(ts, KST):%m-%d %H:%M} KST")
-        parts.append("")
+    원문(published.text)에는 ✅ 핵심 · 📂 주요 내용(불릿) · 🐧 · 🕒 · 기사 원문 ·
+    해시태그가 이미 다 들어 있다. 다시 조립하면 실시간 탭과 양식이 어긋난다.
+    여기서는 맨 윗줄(봇 이름)만 떼고 순위 줄로 바꿔 끼운다.
+    """
+    e = html.escape
+    body = (r[K_TEXT] or "").strip() if len(r) > K_TEXT else ""
+
+    tag = " · 홍보" if csfit.is_pr(r[K_HEAD] or "") else ""
+    head = (f"<b>{rank}/{picked_len}. "
+            f"[{e(topics.display_name(r[K_PRI] or ''))}]{tag}</b>")
+
+    if body:
+        # 첫 줄은 봇 이름이다. 떼어낸다.
+        lines = body.split("\n")
+        if lines and settings.bot_name in lines[0]:
+            lines = lines[1:]
+            while lines and not lines[0].strip():
+                lines = lines[1:]
+        body = "\n".join(lines)
+        # 옛 메시지에 남아 있는 영문 라벨을 펭귄으로 맞춘다.
+        body = body.replace("💡 <b>Why it matters</b>\n", "🐧 ")
+        return head + "\n\n" + body
+
+    # 원문이 없는 행(옛 데이터)은 가진 필드로 최소한만 만든다.
+    parts = [head, "", f'<a href="{e(r[K_URL] or "")}">{e(r[K_HEAD] or "")}</a>', ""]
+    if (r[K_LEDE] or "").strip():
+        parts += ["✅ <b>핵심</b>", e(r[K_LEDE].strip()), ""]
+    if (r[K_WHY] or "").strip():
+        parts += [f"🐧 {e(r[K_WHY].strip())}", ""]
+    ts = _ts(r[K_ORIGIN] if len(r) > K_ORIGIN else None) or _ts(r[K_SENT])
+    if ts:
+        parts.append(f"🕒 {datetime.fromtimestamp(ts, KST):%Y-%m-%d %H:%M} KST")
     return "\n".join(parts)
 
 
 async def run(client, store, dry_run: bool | None = None) -> int | None:
+    """헤더 1건 + 기사 10건을 **각각 별도 메시지로** 보낸다.
+
+    한 메시지에 몰면 텔레그램 4096자 제한을 넘는다(10건 × 약 700자).
+    개별 발행이라 실시간 탭과 읽는 느낌도 같아진다.
+    """
+    import asyncio
     import publisher
     dry = settings.dry_run if dry_run is None else dry_run
     since, until, label = window()
@@ -138,16 +168,29 @@ async def run(client, store, dry_run: bool | None = None) -> int | None:
     if not picked:
         print("[cstop10] 후보 없음 — 게시하지 않음")
         return None
-    text = render(picked, label)
+
+    thread = topics.thread_id_for("cs_top10")
+    msgs = [render_header(picked, label)]
+    msgs += [render_item(i, s, r, len(picked))
+             for i, (s, r) in enumerate(picked, 1)]
+
     if dry:
+        for m in msgs:
+            print("─" * 60)
+            print(m)
         print("─" * 60)
-        print(text)
-        print("─" * 60)
-        print("[cstop10] DRY_RUN — 발행하지 않았습니다")
+        print(f"[cstop10] DRY_RUN — {len(msgs)}건 발행하지 않았습니다")
         return None
-    mid = await publisher.send_raw(client, text, topics.thread_id_for("cs_top10"))
-    # 홍보성을 실었으면 기록한다 — 이틀 간격을 지키기 위해.
+
+    first = None
+    for i, m in enumerate(msgs):
+        mid = await publisher.send_raw(client, m, thread)
+        if first is None:
+            first = mid
+        if i < len(msgs) - 1:
+            await asyncio.sleep(0.6)      # 텔레그램 rate limit 여유
     if any(csfit.is_pr(r[K_HEAD] or "") for _, r in picked):
-        store.record_pr_pick(until, mid)
+        store.record_pr_pick(until, first)
         print("[cstop10] 홍보성 1건 게재 — 이틀간 보류")
-    return mid
+    print(f"[cstop10] {len(msgs)}건 발행 완료")
+    return first
