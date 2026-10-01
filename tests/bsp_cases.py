@@ -165,6 +165,58 @@ def test_event_dedup():
           idx2.match(far, "교보생명 지분 매각 협상 결렬"), None)
 
 
+def test_cstop10():
+    """📌 경전실 Top10 — 적합도·홍보성 판정 (2026-10-01)."""
+    import csfit, cstop10, time
+    print("\n[Top10] 경전실 적합도")
+
+    # 홍보성 판정. **여러 단어 패턴이 핵심 회귀 지점이다** — 예전에 re.X 가
+    # 패턴 안 공백을 지워 "조기 지급"이 "조기지급"이 되는 바람에 전부 샜다.
+    check("헌정식 = 홍보성", csfit.is_pr("한화손보, 최고령 설계사 헌정식"), True)
+    check("두 단어 패턴(조기 지급)",
+          csfit.is_pr("한화그룹, 협력사 대금 1850억 조기 지급"), True)
+    check("업무협약 = 홍보성",
+          csfit.is_pr("한화큐셀·포스코, 영농형태양광 업무협약"), True)
+    check("딜이 섞이면 홍보성 아님",
+          csfit.is_pr("한화생명, 애큐온캐피탈 지분 50.54% 인수 의결"), False)
+    check("자본확충도 홍보성 아님",
+          csfit.is_pr("한화투자증권, 신종자본증권으로 9000억 자본확충"), False)
+
+    # 적합도 — 한화가 가장 큰 가중치
+    hanwha = csfit.score("한화생명, 애큐온캐피탈 인수 의결", "한화생명")[0]
+    other = csfit.score("핀다, 초대 CPO 선임", "핀다")[0]
+    check("한화 기사가 더 높다", hanwha > other, True)
+
+    # 홍보성 쿼터 — 이틀에 한 건
+    def row(k, head, ent, sc):
+        return (k, head, "http://x", "hanwha_group", "", sc, 0, None, ent,
+                "요약", "왜", time.time(), "other", time.time())
+    rows = [row("a", "한화손보, 최고령 설계사 헌정식", "한화손해보험", 60),
+            row("b", "한화큐셀, 영농형태양광 업무협약", "한화큐셀", 55),
+            row("c", "한화생명, 애큐온캐피탈 인수 의결", "한화생명", 92)]
+    now = time.time()
+
+    class S:
+        def __init__(self, last): self._l = last
+        def last_pr_pick(self): return self._l
+
+    picked = cstop10.select(rows, count=10, store=S(None), now=now)
+    npr = sum(1 for _, r in picked if csfit.is_pr(r[1]))
+    check("홍보성은 한 건만", npr, 1)
+
+    picked = cstop10.select(rows, count=10, store=S(now - 86400), now=now)
+    npr = sum(1 for _, r in picked if csfit.is_pr(r[1]))
+    check("하루 전 실었으면 보류", npr, 0)
+
+    picked = cstop10.select(rows, count=10, store=S(now - 3 * 86400), now=now)
+    npr = sum(1 for _, r in picked if csfit.is_pr(r[1]))
+    check("사흘 전이면 다시 허용", npr, 1)
+
+    # 홍보성은 맨 아래
+    picked = cstop10.select(rows, count=10, store=S(None), now=now)
+    check("홍보성은 맨 아래", csfit.is_pr(picked[-1][1][1]), True)
+
+
 def test_source_weight():
     """§16 — 매체 가중치."""
     print("\n[§16] Source Quality")
@@ -362,6 +414,7 @@ def main():
     test_entity_alias()
     test_topic_routing()
     test_event_dedup()
+    test_cstop10()
     test_source_weight()
     test_schema()
     test_render()

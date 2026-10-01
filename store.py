@@ -407,7 +407,7 @@ class Store:
             return c.execute(
                 "SELECT key, headline, source_url, primary_topic, secondary_topics,"
                 "       strategic_score, is_key_issue, event_cluster_id, main_entities,"
-                "       lede, why_it_matters, sent_at, event_type"
+                "       lede, why_it_matters, sent_at, event_type, origin_at"
                 "  FROM published"
                 " WHERE strategic_score IS NOT NULL"
                 "   AND strategic_score >= ?"
@@ -430,6 +430,25 @@ class Store:
                 " ORDER BY window_end DESC LIMIT 1"
             ).fetchone()
         return row[0] if row else None
+
+    def last_pr_pick(self) -> float | None:
+        """📌 경전실 Top10 에 홍보성 기사를 마지막으로 실은 시각. 없으면 None.
+
+        경전실은 한화 홍보성 기사도 공유하지만 매일은 아니다. 이틀에 한 건,
+        그중 가장 큰 것만 싣는다(2026-10-01 사용자 지정).
+        """
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT window_end FROM digest_log WHERE scope='cstop10_pr'"
+                " ORDER BY window_end DESC LIMIT 1"
+            ).fetchone()
+        return row[0] if row else None
+
+    def record_pr_pick(self, ts: float, message_id: int | None = None):
+        with self._conn() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO digest_log (scope, window_end, message_id)"
+                " VALUES ('cstop10_pr', ?, ?)", (ts, message_id))
 
     def record_brief(self, cutoff: float, message_id: int | None):
         with self._conn() as c:
