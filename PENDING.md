@@ -125,11 +125,27 @@ MIRROR_TOPICS=key_issues,daily_brief
 - `store.cluster_seen` 은 "발행됨"을 한 번만 기록한다. 미러가 실패해도 재시도되지 않는다
 - 공용방에도 같은 봇을 관리자로 초대해야 한다
 
-## 5. 배포처 — GitHub 리포 없음
+## 5. 배포 — ✅ 2026-10-01 완료
 
-`START_HERE.md` 8절 위험 4번. 워크플로(`bot.yml`, `brief.yml`, `rollback.yml`)는
-준비돼 있으나 remote 가 없어 돌지 않는다.
-**remote 를 붙일 때 `crypto-news-bot` 이나 `crypto-news-bot-en` 을 절대 지정하지 마라.**
+리포: **`programmerSon717/hanwha-strategy-pulse`** (Private)
+
+- git 이력은 크립토와 분리했다. 크립토 `.git`(374MB, 1,755커밋)은 삭제하지 않고
+  `../BSP-news-bot.git.crypto-backup` 으로 옮겨 뒀다. 필요 없으면 지워도 된다
+  (원본 이력은 `programmerSon717/crypto-news-bot` 에 그대로 있다).
+- Secrets 13개 등록 완료 (봇 토큰·그룹ID·Gemini 키·TG_TOPIC_* 9개·WORKFLOW_PAT)
+- 2026-10-01 15:57 Actions 에서 첫 자동 발행 확인 (포스코·핀다·iM금융 3건)
+
+**커밋 전에 막은 것 — 같은 실수를 반복하지 마라.**
+`HANDOFF.local.md` 는 `.gitignore` 로 막혀 있었는데 `HANDOFF.local.crypto.bak.md` 로
+이름이 바뀌면서 규칙을 빠져나가 커밋 대상에 올라와 있었다. 안에 크립토 봇
+chat_id·봇 id 가 들어 있다. `HANDOFF.local*` 와 `*.crypto.bak.md` 로 규칙을 넓혔다.
+**연결 정보는 `HANDOFF.local.md` 에만 둔다. 커밋되는 문서에 chat_id 를 적지 마라.**
+
+**`bot.yml` 의 DRY_RUN 은 반드시 명시해야 한다.**
+Actions 에는 `.env` 가 없고 `config.py` 의 코드 기본값은 `true` 다. 비워 두면
+봇이 정상적으로 돌면서 아무것도 발행하지 않는다 — 로그가 멀쩡해 조용히 실패한다.
+실제로 첫 실행(#1)이 이 상태로 돌아서 취소하고 다시 올렸다.
+발행을 멈추려면 리포 Variables 에 `DRY_RUN=true` 를 넣는다.
 
 ## 6. 물려받은 자격증명 삭제
 
