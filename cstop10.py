@@ -102,7 +102,10 @@ def _ts(v) -> float | None:
 
 
 TG_LIMIT = 4096          # 텔레그램 한 메시지 상한. **보이는 텍스트** 기준이다
-SAFE_LIMIT = 3900        # 여유분
+SAFE_LIMIT = 4000        # 여유분 96자
+
+# 기사와 기사 사이. 섹션 사이가 한 줄이라 기사 경계는 더 벌려야 구분된다.
+ITEM_GAP = "\n\n━━━━━\n\n"
 
 
 def visible_len(s: str) -> int:
@@ -168,7 +171,9 @@ def render_item(r, *, lede=120, bullets=3, blen=58, why=130) -> str:
     foot = " · ".join(x for x in (when, sec["source"]) if x)
     if foot:
         parts.append(f"🕒 {e(foot)}")
-    return "\n".join(parts)
+    # 섹션 사이는 한 줄 띄운다 (2026-10-01 사용자 지정).
+    # 빈 줄도 텔레그램 길이에 포함되므로 SAFE_LIMIT 여유를 그만큼 잡아 둬야 한다.
+    return "\n\n".join(parts)
 
 
 # 한 판에 안 들어갈 때 차례로 조여 보는 단계. 위에서부터 시도한다.
@@ -191,8 +196,8 @@ def render_all(picked: list, label: str) -> list[str]:
         head += f"  ·  홍보 {n_pr}건 포함"
 
     for opt in TIGHTEN:
-        body = "\n\n".join(render_item(r, **opt) for _, r in picked)
-        msg = head + "\n\n" + body
+        body = ITEM_GAP.join(render_item(r, **opt) for _, r in picked)
+        msg = head + ITEM_GAP + body
         if visible_len(msg) <= SAFE_LIMIT:
             return [msg]
 
@@ -201,7 +206,7 @@ def render_all(picked: list, label: str) -> list[str]:
     msgs, cur = [], head
     for _, r in picked:
         item = render_item(r, **opt)
-        cand = cur + "\n\n" + item
+        cand = cur + ITEM_GAP + item
         if visible_len(cand) > SAFE_LIMIT and cur != head:
             msgs.append(cur)
             cur = item

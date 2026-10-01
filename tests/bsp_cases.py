@@ -234,6 +234,11 @@ def test_cstop10():
     check("영문 라벨 없음", "Why it matters" in out, False)
     check("시각·매체 한 줄", "🕒 2026-10-01 15:45 KST · 보험저널" in out, True)
     check("해시태그 제외", "#태그1" in out, False)
+    # 섹션 사이 한 줄 띄우기 (2026-10-01 사용자 지정)
+    check("핵심 앞 빈 줄", "</a>\n\n✅" in out, True)
+    check("불릿 앞 빈 줄", "\n\n<blockquote>" in out, True)
+    check("펭귄 앞 빈 줄", "</blockquote>\n\n🐧" in out, True)
+    check("시각 앞 빈 줄", "\n\n🕒" in out, True)
 
     # 길이 계산은 **보이는 텍스트** 기준이어야 한다. 긴 URL 에 속으면 안 된다.
     long_url = "http://x/" + "a" * 500
@@ -247,6 +252,7 @@ def test_cstop10():
     many = [(90, row(f"k{i}", f"제목{i}", "한화생명", 90, orig)) for i in range(10)]
     msgs = cstop10.render_all(many, "2026.10.01 Thu")
     check("한 메시지로", len(msgs), 1)
+    check("기사 사이 구분선", cstop10.ITEM_GAP.strip() in msgs[0], True)
     check("상한 이내", cstop10.visible_len(msgs[0]) <= cstop10.SAFE_LIMIT, True)
 
     # 아주 길면 그때만 나눈다
