@@ -4,7 +4,8 @@
     → STEP 5 Event 중복제거 → STEP 6 Topic 분류 → STEP 7 Ranking
     → STEP 8 텔레그램 발행 → (별도) STEP 9 Morning Brief
 
-    python main.py --brief                   # ☀️ Morning Brief 생성 (06:55 KST)
+    python main.py --brief                   # ☀️ Morning Brief 생성 (07:00 KST)
+    python main.py --cstop10                 # 📌 경전실 Top10 생성 (06:55 KST)
     python main.py --brief --dry-run         # 브리프 내용만 확인, 발행 안 함
 
 
@@ -697,6 +698,12 @@ async def main():
             # 대신한다. 모듈은 남겨 두되 기본 경로에서는 부르지 않는다.
             import digest
             await digest.run(client, store, hours=digest_hours, dry_run=dry_run)
+            return
+
+        if "--cstop10" in sys.argv:
+            import cstop10
+            await cstop10.run(client, store,
+                              dry_run=True if dry_run else None)
             return
 
         if "--purge" in sys.argv:

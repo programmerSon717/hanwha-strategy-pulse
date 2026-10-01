@@ -37,6 +37,7 @@ ENV_NAMES = {
     "global_finance":      "TG_TOPIC_GLOBAL_FINANCE",
     "key_issues":          "TG_TOPIC_KEY_ISSUES",
     "daily_brief":         "TG_TOPIC_DAILY_BRIEF",
+    "cs_top10":            "TG_TOPIC_CS_TOP10",
 }
 
 

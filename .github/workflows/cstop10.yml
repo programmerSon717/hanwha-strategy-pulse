@@ -1,0 +1,72 @@
+name: bsp-pulse-cs-top10
+
+# 📌 경전실 Top10 — 매일 KST 06:55.
+#
+# ☀️ Morning Brief(07:00, brief.yml)와 **선정 기준이 다르다.**
+#   Morning Brief : 모델의 strategic_score + 추천 서칭 순서 티어
+#   경전실 Top10  : csfit.score() — 경전실이 실제 공유한 125건의 주제 분포
+#
+# GitHub 의 cron 은 UTC 다. KST 06:55 = UTC 21:55 (전날).
+#
+# **예약 실행은 정시에 오지 않는다.** GitHub 무료 티어의 schedule 은 best-effort 라
+# 몇 분에서 수십 분까지 밀린다(크립토 봇 실측: 간격 중앙값 42분, 최대 11시간).
+# 브리프는 "아침 7시 전후"면 되는 물건이라 이 지연을 감수한다.
+# 정시성이 꼭 필요해지면 21:40 UTC 에 한 번 더 걸고 중복 발행을 digest_log 로 막는다
+# (store.last_brief_cutoff 가 이미 그 역할을 한다).
+
+on:
+  schedule:
+    - cron: "55 21 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "발행하지 않고 내용만 확인"
+        type: boolean
+        default: true
+
+concurrency:
+  group: bsp-pulse-brief
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - run: pip install -q -r requirements.txt
+
+      - name: Morning Brief 생성
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          USE_TOPICS: "true"
+          TG_TOPIC_HANWHA_GROUP: ${{ secrets.TG_TOPIC_HANWHA_GROUP }}
+          TG_TOPIC_MA_GOVERNANCE: ${{ secrets.TG_TOPIC_MA_GOVERNANCE }}
+          TG_TOPIC_INSURANCE_FINANCE: ${{ secrets.TG_TOPIC_INSURANCE_FINANCE }}
+          TG_TOPIC_REGULATION_POLICY: ${{ secrets.TG_TOPIC_REGULATION_POLICY }}
+          TG_TOPIC_COMPETITORS_BIGTECH: ${{ secrets.TG_TOPIC_COMPETITORS_BIGTECH }}
+          TG_TOPIC_DIGITAL_NEWBIZ: ${{ secrets.TG_TOPIC_DIGITAL_NEWBIZ }}
+          TG_TOPIC_GLOBAL_FINANCE: ${{ secrets.TG_TOPIC_GLOBAL_FINANCE }}
+          TG_TOPIC_KEY_ISSUES: ${{ secrets.TG_TOPIC_KEY_ISSUES }}
+          TG_TOPIC_DAILY_BRIEF: ${{ secrets.TG_TOPIC_DAILY_BRIEF }}
+          TG_TOPIC_CS_TOP10: ${{ secrets.TG_TOPIC_CS_TOP10 }}
+          # 수동 실행에서 dry_run 을 켜면 발행하지 않는다.
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: python main.py --cstop10
+
+      - name: 브리프 기록 저장
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          git config user.name  "bsp-pulse-bot"
+          git config user.email "bsp-pulse@users.noreply.github.com"
+          git add botstate.sqlite3 || true
+          git diff --cached --quiet || git commit -m "chore: Morning Brief 기록 [skip ci]"
+          git push || echo "[경고] push 실패 — 다음 실행에서 다시 시도"

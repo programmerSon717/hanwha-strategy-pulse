@@ -82,16 +82,20 @@ def test_entity_alias():
 
 def test_topic_routing():
     """§5·§7 — 토픽 키와 보정."""
-    print("\n[§5] 토픽 9개")
-    check("토픽 수", len(topics.CATEGORIES), 9)
+    print("\n[§5] 토픽 10개")
+    # 2026-10-01: 📌 경전실 Top10 추가. Primary 7개는 그대로다 —
+    #              새 토픽은 집계 토픽이라 모델이 지정하지 않는다.
+    check("토픽 수", len(topics.CATEGORIES), 10)
     check("Primary 지정 가능 토픽 7개", len(PRIMARY_TOPIC_IDS), 7)
-    check("집계 토픽", topics.AGGREGATION, {"key_issues", "daily_brief"})
+    check("집계 토픽", topics.AGGREGATION,
+          {"key_issues", "daily_brief", "cs_top10"})
     for tid, name in [
         ("hanwha_group", "🏢 한화그룹"), ("ma_governance", "🤝 M&A · 지배구조"),
         ("insurance_finance", "🏦 보험 · 금융"), ("regulation_policy", "⚖️ 규제 · 정책"),
         ("competitors_bigtech", "🔎 경쟁사 · Big Tech"),
         ("digital_newbiz", "💡 디지털 · 신사업"), ("global_finance", "🌐 Global"),
         ("key_issues", "🚨 주요이슈"), ("daily_brief", "☀️ Morning Brief"),
+        ("cs_top10", "📌 경전실 Top10"),
     ]:
         check(f"{tid} 이름", topics.CATEGORIES[tid], name)
 
