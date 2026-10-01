@@ -76,7 +76,7 @@ class Settings:
     key_issue_daily_cap: int = int(os.getenv("KEY_ISSUE_DAILY_CAP", "6"))
 
     # ── Morning Brief (§23) ──
-    daily_brief_time: str = os.getenv("DAILY_BRIEF_TIME", "07:00")
+    daily_brief_time: str = os.getenv("DAILY_BRIEF_TIME", "06:55")
     daily_brief_count: int = int(os.getenv("DAILY_BRIEF_COUNT", "10"))
     # 같은 회사/같은 사건이 브리프를 독식하지 않게 하는 상한 (§24-6)
     daily_brief_max_per_entity: int = int(os.getenv("DAILY_BRIEF_MAX_PER_ENTITY", "4"))
@@ -268,23 +268,6 @@ class Settings:
          "en-US", "US", "US:en", "글로벌"),
         ("한국계 해외진출", "한국 금융사 해외 진출 OR 현지법인 OR 인수 when:7d",
          "ko", "KR", "KR:ko", "글로벌"),
-
-        # ── 2026-10-01 경영전략실 키워드 기준 보강 ──────────────────
-        # 기존 쿼리가 덮지 못하던 것만 추가한다. 중복 쿼리는 수집량만 늘린다.
-        ("네이버뉴스", "site:n.news.naver.com 금융 OR 보험 OR 인수 OR 지배구조 when:2d",
-         "ko", "KR", "KR:ko", "경제"),
-        ("빅테크 자회사",
-         '"카카오페이" OR "카카오뱅크" OR "네이버페이" OR "네이버파이낸셜" OR "토스뱅크" when:3d',
-         "ko", "KR", "KR:ko", "빅테크"),
-        ("한화 오너", "김동관 OR 김동원 when:7d", "ko", "KR", "KR:ko", "한화"),
-        ("삼성생명법", "삼성생명법 OR 보험업법 자산운용 비율 when:7d",
-         "ko", "KR", "KR:ko", "규제"),
-        ("주주행동", "경제개혁연대 OR 주주행동주의 OR 스튜어드십코드 when:7d",
-         "ko", "KR", "KR:ko", "지배구조"),
-        ("감사원", "감사원 금융 OR 보험 감사 OR 처분요구 when:7d",
-         "ko", "KR", "KR:ko", "규제"),
-        ("초고액자산가", "UHNW OR 초고액자산가 OR 멀티부티크 OR 패밀리오피스 when:7d",
-         "ko", "KR", "KR:ko", "금융"),
     ])
 
     # 긴급 레인은 BSP 에서 쓰지 않는다. 크립토 봇의 경제지표 속보 레인이었고

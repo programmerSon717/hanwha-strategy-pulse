@@ -407,7 +407,7 @@ class Store:
             return c.execute(
                 "SELECT key, headline, source_url, primary_topic, secondary_topics,"
                 "       strategic_score, is_key_issue, event_cluster_id, main_entities,"
-                "       lede, why_it_matters, sent_at"
+                "       lede, why_it_matters, sent_at, event_type"
                 "  FROM published"
                 " WHERE strategic_score IS NOT NULL"
                 "   AND strategic_score >= ?"

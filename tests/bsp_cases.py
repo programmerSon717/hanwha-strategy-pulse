@@ -234,7 +234,7 @@ def test_thresholds():
     check("discard", settings.discard_threshold, 50)
     check("general", settings.general_topic_threshold, 65)
     check("key issue", settings.key_issue_threshold, 85)
-    check("브리프 시각", settings.daily_brief_time, "06:55")
+    check("브리프 시각", settings.daily_brief_time, "07:00")
     check("브리프 건수", settings.daily_brief_count, 10)
     # 운영에 들어가면 .env 의 DRY_RUN 은 false 가 된다. 현재 값이 아니라
     # **코드의 기본값**이 true 인지를 본다 — .env 가 없거나 키가 빠졌을 때
@@ -253,8 +253,12 @@ def test_isolation():
     print("\n[격리] 크립토 봇과의 분리")
     import subprocess
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    r = subprocess.run(["git", "remote"], cwd=here, capture_output=True, text=True)
-    check("git remote 없음(크립토 리포로 push 불가)", r.stdout.strip(), "")
+    # 2026-10-01 배포 후: remote 가 생겼다. 지켜야 할 불변식은 "remote 가 없다"가
+    # 아니라 "크립토 리포를 가리키지 않는다" 다.
+    r = subprocess.run(["git", "remote", "-v"], cwd=here, capture_output=True, text=True)
+    remotes = r.stdout.strip()
+    check("remote 가 크립토 리포가 아님",
+          ("crypto-news-bot" in remotes), False)
     # 토큰이 "비어 있는가"가 아니라 "크립토 봇 것과 다른가"를 본다.
     # 셋업을 마치면 토큰은 당연히 채워진다. 지켜야 할 불변식은 재사용 금지다.
     inherited = {}

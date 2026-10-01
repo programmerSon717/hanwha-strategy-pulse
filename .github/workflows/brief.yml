@@ -1,8 +1,8 @@
 name: bsp-pulse-morning-brief
 
-# ☀️ Morning Brief (스펙 §23) — 매일 KST 06:55.
+# ☀️ Morning Brief (스펙 §23) — 매일 KST 07:00.
 #
-# GitHub 의 cron 은 UTC 다. KST 06:55 = UTC 21:55 (전날).
+# GitHub 의 cron 은 UTC 다. KST 07:00 = UTC 22:00 (전날).
 #
 # **예약 실행은 정시에 오지 않는다.** GitHub 무료 티어의 schedule 은 best-effort 라
 # 몇 분에서 수십 분까지 밀린다(크립토 봇 실측: 간격 중앙값 42분, 최대 11시간).
@@ -12,7 +12,7 @@ name: bsp-pulse-morning-brief
 
 on:
   schedule:
-    - cron: "55 21 * * *"
+    - cron: "0 22 * * *"
   workflow_dispatch:
     inputs:
       dry_run:

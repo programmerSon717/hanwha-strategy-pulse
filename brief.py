@@ -45,6 +45,55 @@ def cutoff_window(store, now: float | None = None) -> tuple[float, float, str]:
     return prev, now, label
 
 
+# ── 경영전략실 추천 서칭 순서 (2026-10-01 사용자 지정) ──────────
+# 브리프 Top10 은 점수만으로 뽑지 않는다. 아래 순서가 **1차 정렬키**이고
+# strategic_score 는 같은 티어 안에서의 2차 정렬키다.
+#
+#   1  한화그룹 관련
+#   2  진행중인 M&A, 보험 관련
+#   3  규제(공정위·금융위 등), 지배구조
+#   4  한화금융 계열사 관련
+#   5  기타 (네이버·카카오·토스·메리츠 등)
+#
+# 1 과 4 를 가르는 기준 (2026-10-01 사용자 확정):
+#   **기사의 핵심이 한화면 그룹이든 금융계열사든 전부 티어 1 이다.**
+#   티어 4 는 한화가 곁다리로만 언급된 기사(예: 금감원 규제 기사에 한화생명이
+#   업계 사례로 들어간 경우)를 위해 남겨 둔다.
+# 이렇게 하지 않으면 한화생명 애큐온캐피탈 인수(95점) 같은 최대 뉴스가
+# 한화투자증권 유상증자(88점) 아래로 밀린다. 실제로 그렇게 나왔다.
+# 사용자가 지정한 순서이므로 임의로 바꾸지 마라.
+
+_HANWHA_FIN = ("한화생명", "한화손해보험", "한화투자증권", "한화자산운용",
+               "한화저축은행", "한화생명금융서비스", "캐롯손해보험", "피플라이프")
+_HANWHA_GRP = ("한화그룹", "한화에어로스페이스", "한화솔루션", "한화오션",
+               "한화시스템", "한화호텔앤드리조트", "김동관", "김동원")
+_DEAL_TYPES = ("acquisition", "merger", "divestiture", "stake_change", "investment")
+
+
+def tier(primary: str, entities: str, event_type: str = "") -> int:
+    """추천 서칭 순서상의 티어 (1 이 가장 앞)."""
+    ents = [e.strip() for e in (entities or "").split(",") if e.strip()]
+    has_grp = any(e in _HANWHA_GRP for e in ents)
+    has_fin = any(e in _HANWHA_FIN for e in ents)
+
+    # 1) 한화 — 그룹이든 금융계열사든, 기사의 핵심이 한화면 최우선
+    if has_grp or has_fin or primary == "hanwha_group":
+        return 1
+    # 2) 진행중인 M&A · 보험
+    if primary == "ma_governance" or (event_type in _DEAL_TYPES) \
+            or primary == "insurance_finance":
+        return 2
+    # 3) 규제 · 지배구조
+    if primary == "regulation_policy":
+        return 3
+    # 4) 한화가 곁다리로 언급된 기사 — 위에서 이미 걸러졌으므로 여기엔
+    #    secondary_topics 로만 한화가 걸린 경우가 온다.
+    if "hanwha" in (primary or ""):
+        return 4
+    # 5) 기타
+    return 5
+
+
 def select(rows: list) -> list:
     """§24 Diversified Ranking. rows 는 store.brief_candidates() 결과."""
     # rows: (key, headline, url, primary, secondary, score, is_key, cluster,
@@ -60,8 +109,16 @@ def select(rows: list) -> list:
         if cur is None or (r[K_SCORE] or 0) > (cur[K_SCORE] or 0):
             best[cid] = r
 
-    # 5) Strategic Score 순
-    ranked = sorted(best.values(), key=lambda r: (r[K_SCORE] or 0), reverse=True)
+    # 5) 추천 서칭 순서(티어) → 같은 티어 안에서 Strategic Score 순
+    # rows 끝에 event_type 이 붙어 있다(store.brief_candidates). 없으면 빈 값으로 둔다.
+    def _etype(r):
+        return r[12] if len(r) > 12 else ""
+
+    def _sortkey(r):
+        return (tier(r[K_PRI] or "", r[K_ENT] or "", _etype(r) or ""),
+                -(r[K_SCORE] or 0))
+
+    ranked = sorted(best.values(), key=_sortkey)
 
     # 6) 동일 회사 과도 중복 보정 — 한 엔티티가 브리프를 독식하지 않게.
     #    단, 상한은 넉넉하다. 한화 사건이 4개면 4개 다 들어가는 게 맞다(§23).
@@ -135,7 +192,7 @@ def render(picked: list, signals: list[str], label: str) -> str:
             parts += ["", f"<b>핵심</b>  {e(core)}"]
         why = _one_line(r[K_WHY])
         if why:
-            parts.append(f"<b>Why it matters</b>  {e(why)}")
+            parts.append(f"🐧 {e(why)}")
         parts.append("")
 
     if signals:
