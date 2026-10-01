@@ -82,6 +82,12 @@ jobs:
           MAX_AGE_HOURS: ${{ vars.MAX_AGE_HOURS || '12' }}
           USE_TOPICS: "true"
 
+          # **반드시 명시해야 한다.** Actions 에는 .env 가 없고(gitignore),
+          # config.py 의 코드 기본값은 true 다. 비워 두면 봇이 정상적으로 돌면서
+          # 아무것도 발행하지 않는다 — 조용히 실패해서 알아채기 어렵다.
+          # 발행을 멈추려면 리포 Variables 에 DRY_RUN=true 를 넣으면 된다.
+          DRY_RUN: ${{ vars.DRY_RUN || 'false' }}
+
           # 폴링 1회에 쓸 수 있는 시간 상한(초). 이 값이 1회 요약 상한을 정한다
           # (요약에 60%를 쓰고, 12건/분 스로틀이라 120*0.6/5 = 14건).
           #
