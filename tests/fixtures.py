@@ -1,0 +1,53 @@
+"""렌더 회귀 검사용 표본. render() 의 모든 갈래를 한 번씩 밟는다."""
+
+CASES = [
+    ("보통 기사", "https://www.blockmedia.co.kr/archives/1?utm_source=rss", {
+        "headline": "미국 SEC, 크립토 ETF 자동 승인 경로 재검토",
+        "lede": "SEC가 신종 상품 급증에 대응해 자동 승인 절차를 다시 들여다본다.",
+        "bullets": ["자동 승인 경로 재검토", "고레버리지 상품이 대상"],
+        "comment": "규칙이 조여지면 신규 상장이 늦어진다.",
+        "category": "US Policy", "importance": 4,
+        "hashtags": ["SEC", "ETF"], "source": "규제:미국(Bloomberg.com)",
+        "posted_at": "2026-08-30 01:01 KST",
+    }),
+    ("업데이트 블록", "https://cointelegraph.com/news/2", {
+        "headline": "BIS 총재, 스테이블코인 회의론 재확인",
+        "lede": "국제결제은행 총재가 스테이블코인의 화폐 적격성을 다시 부정했다.",
+        "bullets": ["세 가지 테스트 모두 미통과"],
+        "comment": "중앙은행 쪽 논조는 그대로다.",
+        "category": "해외정책", "importance": 4,
+        "hashtags": ["스테이블코인", "BIS"], "source": "Cointelegraph",
+        "posted_at": "2026-08-30 00:40 KST",
+        "update_note": "8월 29일 22시 블록미디어 기사와 겹치나, 이 기사에는 결제 규모 수치가 추가됐다.",
+    }),
+    ("인사이트(트윗 캡처)", "https://t.me/enjoymyhobby/3", {
+        "headline": "연준 인사, 9월 인하 가능성 시사",
+        "lede": "발언 요지가 시장 기대를 자극했다.",
+        "context": "물가 둔화가 이어지는 국면이다.",
+        "impact": "단기물 금리가 먼저 반응했다.",
+        "watch": "다음 고용보고서.",
+        "comment": "말 한마디에 곡선이 움직인다.",
+        "category": "US Rates", "importance": 4,
+        "hashtags": ["연준", "금리"], "source": "TG:@enjoymyhobby",
+        "author": "Nick Timiraos", "posted_at": "2026-08-29 22:22 KST",
+    }),
+    ("거래소 공지", "https://api.bithumb.com/v1/notices/4", {
+        "headline": "빗썸, 아이콘(ICX) 거래유의종목 지정",
+        "lede": "유의종목 지정으로 거래 지원이 재검토된다.",
+        "bullets": ["유의종목 지정", "재검토 기간 부여"],
+        "comment": "상폐로 이어질지 지켜볼 일이다.",
+        "category": "거래소이슈", "importance": 3,
+        "hashtags": ["빗썸", "ICX"], "source": "빗썸 공지",
+        "posted_at": "2026-08-29 20:00 KST",
+    }),
+    ("섹션 제목 지정", "https://www.coindesk.com/5", {
+        "headline": "잭슨홀 연설 요약",
+        "lede": "의장 연설의 논점을 정리했다.",
+        "section_title": "연설 요지",
+        "bullets": ["1. 물가", "  · PCE 3.7%", "2. 고용"],
+        "comment": "매파적이었다.",
+        "category": "US Rates", "importance": 5,
+        "hashtags": ["잭슨홀", "연준"], "source": "CoinDesk",
+        "posted_at": "2026-08-29 12:06 KST",
+    }),
+]

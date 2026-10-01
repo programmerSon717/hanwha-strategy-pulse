@@ -1,0 +1,88 @@
+{
+  "_comment": "Entity Alias Map (스펙 §30). 같은 회사를 다른 표기로 써도 한 엔티티로 인식한다. 코드에 if 문을 늘리지 말고 여기만 고친다.",
+
+  "hanwha": {
+    "_label": "한화 (그룹·금융계열사)",
+    "한화생명": ["한화생명보험", "Hanwha Life", "Hanwha Life Insurance"],
+    "한화손해보험": ["한화손보", "Hanwha General Insurance", "Hanwha Non-Life"],
+    "한화투자증권": ["한화증권", "Hanwha Investment & Securities"],
+    "한화자산운용": ["Hanwha Asset Management", "한화운용"],
+    "한화저축은행": ["Hanwha Savings Bank"],
+    "한화생명금융서비스": ["한화생명금융", "Hanwha Life Financial Services"],
+    "캐롯손해보험": ["캐롯손보", "Carrot Insurance", "캐롯"],
+    "피플라이프": ["PeopleLife"],
+    "한화그룹": ["Hanwha Group", "한화"],
+    "한화에어로스페이스": ["Hanwha Aerospace"],
+    "한화솔루션": ["Hanwha Solutions"],
+    "한화오션": ["Hanwha Ocean"],
+    "한화시스템": ["Hanwha Systems"]
+  },
+
+  "competitor_insurance": {
+    "_label": "경쟁 보험사",
+    "삼성생명": ["Samsung Life"],
+    "삼성화재": ["Samsung Fire & Marine", "삼성화재해상보험"],
+    "교보생명": ["Kyobo Life", "교보생명보험"],
+    "신한라이프": ["신한생명", "Shinhan Life"],
+    "KB라이프": ["KB생명", "푸르덴셜생명", "KB Life"],
+    "NH농협생명": ["농협생명"],
+    "동양생명": ["Tongyang Life"],
+    "ABL생명": ["ABL Life"],
+    "메리츠화재": ["메리츠", "Meritz Fire"],
+    "DB손해보험": ["DB손보", "DB Insurance"],
+    "현대해상": ["Hyundai Marine & Fire"],
+    "KB손해보험": ["KB손보"],
+    "흥국생명": [],
+    "미래에셋생명": []
+  },
+
+  "competitor_finance": {
+    "_label": "경쟁 금융그룹·증권·운용",
+    "KB금융": ["KB금융지주", "국민은행", "KB국민은행", "KB Financial"],
+    "신한금융": ["신한금융지주", "신한은행", "Shinhan Financial"],
+    "하나금융": ["하나금융지주", "하나은행", "Hana Financial"],
+    "우리금융": ["우리금융지주", "우리은행", "Woori Financial"],
+    "NH농협금융": ["농협금융", "NH투자증권", "농협은행"],
+    "미래에셋": ["미래에셋증권", "미래에셋자산운용", "Mirae Asset"],
+    "삼성증권": [],
+    "한국투자증권": ["한국투자금융지주", "한투증권"],
+    "키움증권": [],
+    "메리츠금융지주": ["메리츠증권"],
+    "SK증권": []
+  },
+
+  "bigtech": {
+    "_label": "Big Tech · FinTech",
+    "네이버": ["NAVER", "네이버파이낸셜", "NAVER Financial", "네이버페이", "Naver Pay"],
+    "카카오": ["Kakao", "카카오페이", "Kakao Pay", "카카오뱅크", "KakaoBank"],
+    "토스": ["비바리퍼블리카", "Toss", "토스뱅크", "Toss Bank", "토스증권"],
+    "쿠팡": ["Coupang", "쿠팡페이"],
+    "케이뱅크": ["K뱅크", "K Bank"]
+  },
+
+  "regulator": {
+    "_label": "규제·정책 당국",
+    "금융위원회": ["금융위", "FSC", "Financial Services Commission"],
+    "금융감독원": ["금감원", "FSS", "Financial Supervisory Service"],
+    "공정거래위원회": ["공정위", "FTC", "Korea Fair Trade Commission"],
+    "한국은행": ["한은", "Bank of Korea", "BOK"],
+    "국세청": [],
+    "감사원": [],
+    "예금보험공사": ["예보"],
+    "한국거래소": ["KRX"],
+    "국회": ["정무위", "정무위원회"],
+    "기획재정부": ["기재부"]
+  },
+
+  "global": {
+    "_label": "해외 시장·기관",
+    "베트남": ["Vietnam", "Viet Nam", "하노이", "호치민"],
+    "인도네시아": ["Indonesia", "자카르타", "OJK"],
+    "동남아시아": ["ASEAN", "아세안", "Southeast Asia"],
+    "미국": ["United States", "US", "SEC", "Fed", "연준"],
+    "일본": ["Japan", "금융청", "FSA"],
+    "싱가포르": ["Singapore", "MAS"],
+    "홍콩": ["Hong Kong", "HKMA", "SFC"],
+    "중국": ["China", "인민은행", "PBOC"]
+  }
+}

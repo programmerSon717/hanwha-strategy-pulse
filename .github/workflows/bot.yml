@@ -1,0 +1,270 @@
+name: bsp-pulse
+
+on:
+  schedule:
+    # 30분마다. **폴링 주기가 아니라 '루프 재시작' 주기다.**
+    #
+    # 예전엔 이 cron 이 곧 폴링 주기였는데, GitHub 무료 티어의 예약 실행은
+    # best-effort 라 "*/10" 을 걸어도 실제로는 하루 6~32회, 간격 중앙값 42분
+    # (최대 11시간)이었다. 즉 GitHub 이 안 깨우면 그동안 봇이 통째로 멈췄다.
+    # 이제 job 안에서 스스로 반복 폴링하므로 cron 은 루프를 시작시키는 역할만 한다.
+    #
+    # **주기를 짧게 잡는 이유(3시간으로 했다가 사고를 냈다):**
+    # 루프가 도는 동안에는 예약이 '대기'로 쌓여 루프가 끝나는 즉시 이어받지만,
+    # 체인이 한 번 끊기면(루프가 죽거나, 워크플로를 방금 바꿨거나) 그때부터는
+    # 순전히 cron 이 깨워주기만 기다린다. 3시간으로 잡았더니 그 공백이 그대로
+    # 3시간 정지가 됐다. GitHub 지연까지 감안해 30분으로 둔다.
+    #
+    # 둥근 시각(:00, :30)은 예약이 몰려 더 밀리므로 9분·39분으로 비켜 잡는다.
+    #
+    # 루프가 도는 중에 들어온 예약은 대기하다가 다음 예약에 밀려 'cancelled' 로
+    # 남는다(GitHub 은 대기열에 하나만 둔다). 실행 목록에 cancelled 가 보이는 건
+    # 정상이며 실패가 아니다.
+    - cron: "9,39 * * * *"
+
+  # 코드를 푸시하면 곧바로 루프를 시작한다 — cron 이 발화할 때까지 기다리지 않는다.
+  #
+  # GitHub 예약 실행은 정시에 안 온다(실측: "9,39" 를 걸어도 그 시각에 안 옴).
+  # 그래서 루프 체인이 끊긴 뒤 다시 살리려면 사람이 Run workflow 를 눌러야 했다.
+  # push 는 즉시·확실하게 발화하므로, 이걸 부팅 수단으로 쓴다.
+  #
+  # 루프가 매 폴링마다 남기는 발행 이력 커밋에는 "[skip ci]" 가 붙어 있어
+  # 자기 커밋으로 자신을 다시 띄우지 않는다. 무한 재귀 걱정 없음.
+  push:
+    branches: [main]
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "실행 모드"
+        type: choice
+        default: poll
+        options: [poll, digest]
+
+# 동시 실행되면 상태 DB(botstate.sqlite3)가 꼬이므로 직렬화한다.
+# cancel-in-progress: false 라서 루프가 도는 동안 들어온 예약은 '대기'로 남았다가
+# 루프가 끝나는 즉시 이어서 시작한다 — 이게 연속 가동을 만든다.
+concurrency:
+  group: bsp-pulse
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # 상태 DB 커밋용
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    # GitHub job 상한은 6시간. 루프는 5시간 30분만 돌고 스스로 끝낸다(아래 LOOP_SECONDS).
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 상시 폴링 루프
+        env:
+          PYTHONUNBUFFERED: "1"   # 없으면 로그가 버퍼에 갇혀 취소 시 아무것도 안 남는다
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.1-flash-lite' }}
+          # 3 이 기본이다. 4로 올리면 토큰화 주식 거래량·온체인 출금 같은
+          # 진짜 시장 뉴스까지 잘린다(실측: 유효 20건 중 발행 가능 1건).
+          # 범위는 중요도가 아니라 주제로 가른다 — prompts 의 '크립토 관련성' 절.
+          MIN_IMPORTANCE: ${{ vars.MIN_IMPORTANCE || '3' }}
+          POLICY_MIN_IMPORTANCE: ${{ vars.POLICY_MIN_IMPORTANCE || '3' }}
+          # 과거 기사는 끌어오지 않는다 — 최신만 발행
+          MAX_AGE_HOURS: ${{ vars.MAX_AGE_HOURS || '12' }}
+          USE_TOPICS: "true"
+
+          # 폴링 1회에 쓸 수 있는 시간 상한(초). 이 값이 1회 요약 상한을 정한다
+          # (요약에 60%를 쓰고, 12건/분 스로틀이라 120*0.6/5 = 14건).
+          #
+          # 진짜 상한은 Gemini 무료 일일 한도 560건이다.
+          #
+          # 120 → 60 (2026-08-29). 실측 소비 속도가 시간당 38.5건(전체 스윕 36 +
+          # 긴급 2.5)이라 560건을 14.5시간 만에 태우고, 16:00 리셋까지 9시간 30분이
+          # 통째로 조용했다. 회당 7건이면 24시간에 고르게 퍼진다.
+          # **발행량은 줄지 않는다** — 하루 총량은 어차피 한도가 정하고,
+          # 요약분의 15~20%만 실제 발행되기 때문이다.
+          # 60 → 150 (2026-08-29). 60 은 **모델이 쉬는 시간보다 짧았다.**
+          # 한도에 걸린 모델은 최소 60초 쉬는데 예산이 60초면 한 폴링에서
+          # 아무것도 못 하고 끝난다. 실측 로그: 7건 중 1건만 통과.
+          # 150 이면 쉬는 동안 다른 모델로 넘어가 일을 끝낸다(상한 18건/회).
+          # 몰아서 빨리 받고 싶으면 올리고, 더 길게 끌고 싶으면 낮춘다.
+          RUN_BUDGET_SEC: ${{ vars.RUN_BUDGET_SEC || '150' }}
+
+          # 전체 스윕 간격(초). 소스 60여 곳을 매번 긁으므로 너무 짧으면 상대가 막는다.
+          POLL_INTERVAL_SEC: ${{ vars.POLL_INTERVAL_SEC || '1200' }}
+          # 긴급 레인 간격(초). 지표 발표·FOMC·잭슨홀은 늦으면 가치가 없어져
+          # 전체 스윕을 기다리지 않고 따로 짧게 돈다. 소스가 3곳뿐이라 부담이 적다.
+          URGENT_INTERVAL_SEC: ${{ vars.URGENT_INTERVAL_SEC || '300' }}
+          # Trading Economics 지표 중요도 하한(1~3). 1=전부. Global Macro 탭이
+          # 시끄러우면 2 로 올린다(하루 53건 → 10건 안팎).
+          TE_MIN_IMPORTANCE: ${{ vars.TE_MIN_IMPORTANCE || '1' }}
+          # 경제 캘린더(지표 숫자) 쪽 손잡이.
+          # 중요도 2 이상 + 지정 지표만 = 평일 약 10건/일. 1 로 낮추면 30건 넘는다.
+          TE_CAL_MIN_IMPORTANCE: ${{ vars.TE_CAL_MIN_IMPORTANCE || '2' }}
+          # 발표 후 몇 분 이내 것만 잡을지. 과거 이벤트를 뒤늦게 긁어오지 않기 위한 창.
+          TE_CAL_FRESH_MIN: ${{ vars.TE_CAL_FRESH_MIN || '45' }}
+          # 루프 총 가동 시간(초). 5시간 30분 — job 타임아웃(350분) 앞에서 스스로 끝낸다.
+          LOOP_SECONDS: ${{ vars.LOOP_SECONDS || '19800' }}
+        run: |
+          set -u
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 발행분을 리포에 즉시 반영한다. **매 폴링마다** 해야 한다 —
+          # job 이 중간에 취소돼도 이미 발행한 것까지는 기록이 남아야
+          # 다음 실행이 같은 뉴스를 다시 발행하지 않는다.
+          # 발행이 없으면 커밋하지 않는다(저장소가 불필요하게 불어나는 걸 막는다).
+          # 총괄 브리핑이 나간 회차인지 표시하는 파일. 아래 다이제스트 단계에서 만든다.
+          DIGEST_FLAG=/tmp/digest_published
+
+          save_state() {
+            # 브리핑이 나간 회차만 사람 이메일로 커밋한다(기여 그래프용).
+            # 폴링 커밋까지 사람 이름으로 돌리면 하루 70여 건이 쌓여 실제 작업이 묻힌다.
+            # 커밋 작성자는 git log 에 적히는 문자열일 뿐이라 발행·폴링과 무관하다.
+            if [[ -f "$DIGEST_FLAG" ]]; then
+              git config user.name  "programmerSon717"
+              git config user.email "73008892+programmerSon717@users.noreply.github.com"
+              MSG="digest: $(TZ=Asia/Seoul date '+%m-%d %H시') 브리핑 [skip ci]"
+              rm -f "$DIGEST_FLAG"
+            else
+              git config user.name  "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              MSG="chore: 발행 이력 갱신 [skip ci]"
+            fi
+            if [[ -z "$(git status --porcelain botstate.sqlite3 docs)" ]]; then
+              echo "  [상태] 새 발행 없음 — 커밋 생략"
+              return
+            fi
+            git add botstate.sqlite3 docs
+            git commit -q -m "$MSG"
+            # rebase 가 중간에 멈추면 .git 이 rebase 상태로 남아 그 뒤 회차의 commit 이
+            # 전부 실패한다. 5시간 반 동안 16회를 도는 루프라 반드시 원상복구해야 한다.
+            if ! git pull -q --rebase --autostash; then
+              git rebase --abort 2>/dev/null || true
+              echo "  [상태] rebase 실패 — 되돌리고 다음 회차에 재시도"
+            fi
+            if git push -q; then
+              echo "  [상태] 발행 이력 커밋·푸시 완료"
+            else
+              echo "  [상태] 푸시 실패 — 다음 회차에 재시도"
+            fi
+          }
+
+          LOOP_END=$(( $(date +%s) + LOOP_SECONDS ))
+          ROUND=0
+
+          while :; do
+            ROUND=$(( ROUND + 1 ))
+            echo "::group::폴링 #${ROUND}  ($(TZ=Asia/Seoul date '+%m-%d %H:%M KST'))"
+
+            # 폴링 1회. 실패해도 루프를 세우지 않는다 — 다음 회차가 이어받는다.
+            python main.py --once || echo "  [경고] 폴링 실패 — 다음 회차로 넘어간다"
+
+            # 시간별 다이제스트: KST 기준 매시 첫 회차에서만.
+            # 중복은 digest_log 가 막지만, 불필요한 모델 호출을 줄이려 여기서도 건다.
+            MIN=$(TZ=Asia/Seoul date +%-M)
+            if [[ "${{ github.event.inputs.mode }}" == "digest" || "$MIN" -lt 20 ]]; then
+              # 총괄 브리핑이 '실제로' 나갔는지는 digest_log 의 overview 행이 늘었는지로 본다.
+              # 로그 문구를 grep 하면 문구가 바뀔 때 조용히 깨진다.
+              OV_BEFORE=$(python tools/overview_count.py)
+              true  # 시간별 다이제스트는 BSP 미사용 — Morning Brief(brief.yml)가 대신한다
+              OV_AFTER=$(python tools/overview_count.py)
+              if [[ "$OV_AFTER" -gt "$OV_BEFORE" ]]; then
+                touch "$DIGEST_FLAG"
+                echo "  [브리핑] 총괄 브리핑 발행 — 이번 커밋은 사람 이름으로 남긴다"
+              fi
+            fi
+
+            # 공개 상태판(docs/)도 같이 갱신한다. Pages 가 이걸 서비스한다.
+            # 출력을 버리면 왜 실패했는지 알 수 없다. 실제로 상태판이 조용히
+            # 멈춰 있었는데 원인을 못 봤다. 실패 시에만 사유를 남긴다.
+            python admin/snapshot.py --write 2>&1 | tail -2 || echo "  [경고] 상태판 갱신 실패"
+            python admin/build_docs.py 2>&1 | tail -1 || echo "  [경고] 문서 갱신 실패"
+            save_state
+            echo "::endgroup::"
+
+            # 다음 회차가 루프 종료 시각을 넘기면 여기서 끝낸다.
+            # 대기 중이던 예약 실행이 곧바로 이어받아 다음 루프를 시작한다.
+            NEXT=$(( $(date +%s) + POLL_INTERVAL_SEC ))
+            if [[ $NEXT -ge $LOOP_END ]]; then
+              echo "루프 종료 — 전체 스윕 ${ROUND}회 완료. 다음 실행이 이어받는다."
+              break
+            fi
+
+            # 다음 전체 스윕까지 그냥 자지 않고, 그 사이를 긴급 레인으로 채운다.
+            # 지표 발표·FOMC·잭슨홀은 20분 늦으면 이미 가치가 없다.
+            WAITED=0
+            while [[ $WAITED -lt $POLL_INTERVAL_SEC ]]; do
+              SLEEP=$URGENT_INTERVAL_SEC
+              LEFT=$(( POLL_INTERVAL_SEC - WAITED ))
+              [[ $SLEEP -gt $LEFT ]] && SLEEP=$LEFT
+              sleep "$SLEEP"
+              WAITED=$(( WAITED + SLEEP ))
+              [[ $(date +%s) -ge $LOOP_END ]] && break
+              echo "::group::긴급 레인  ($(TZ=Asia/Seoul date '+%H:%M KST'))"
+              true  # 긴급 레인(크립토 경제지표)은 BSP 미사용
+              save_state
+              echo "::endgroup::"
+            done
+          done
+
+      - name: 다음 루프 예약 (자체 체인)
+        # **이게 이 봇이 24시간 도는 실제 동력이다.** cron 은 보조일 뿐이다.
+        #
+        # GitHub 무료 티어의 예약 실행은 실측상 믿을 수 없다. cron 을 10분/30분
+        # 어느 쪽으로 걸어도 실제 생성은 하루 1~32회로 들쭉날쭉했고, 2026-08-28 에는
+        # 10시간 동안 예약 이벤트가 통째로 무시됐다(대기·취소도 아닌 미생성).
+        # 반면 push 와 workflow_dispatch 는 즉시 확실하게 발화한다.
+        # 그래서 루프가 끝나면 스스로 다음 실행을 띄워 체인을 잇는다.
+        #
+        # 기본 GITHUB_TOKEN 으로는 안 된다 — GitHub 이 무한 재귀를 막으려고
+        # 그 토큰이 만든 이벤트로는 워크플로를 띄우지 못하게 해뒀다.
+        # 그래서 별도 PAT(WORKFLOW_PAT, Actions 읽기/쓰기)을 쓴다.
+        #
+        # **체인을 멈추려면** Actions → 워크플로 → ... → Disable workflow.
+        # (실행을 하나 취소하는 것만으로는 안 멈춘다. 다음 실행이 이미 예약돼 있다)
+        if: always()
+        env:
+          PAT: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          if [[ -z "${PAT:-}" ]]; then
+            echo "WORKFLOW_PAT 없음 — 자체 체인 생략. cron 이 깨워주기를 기다린다."
+            exit 0
+          fi
+          CODE=$(curl -s -o /tmp/dispatch.txt -w '%{http_code}' -X POST             -H "Accept: application/vnd.github+json"             -H "Authorization: Bearer ${PAT}"             -H "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/bot.yml/dispatches"             -d '{"ref":"main"}')
+          if [[ "$CODE" == "204" ]]; then
+            echo "✅ 다음 루프 예약 완료 — 이 job 이 끝나는 즉시 이어서 시작한다"
+          else
+            echo "⚠️ 다음 루프 예약 실패 (HTTP $CODE) — cron 이 대신 깨우기를 기다린다"
+            cat /tmp/dispatch.txt || true
+          fi
+
+      - name: 발행 이력 저장 (마무리)
+        # 루프 중간에 취소·실패했을 때를 위한 안전망. 정상 종료면 보통 커밋할 게 없다.
+        if: always()
+        run: |
+          if [[ -n "$(git status --porcelain botstate.sqlite3 docs)" ]]; then
+            if [[ -f /tmp/digest_published ]]; then
+              git config user.name  "programmerSon717"
+              git config user.email "73008892+programmerSon717@users.noreply.github.com"
+            else
+              git config user.name  "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            fi
+            git add botstate.sqlite3 docs
+            git commit -m "chore: 발행 이력 갱신 [skip ci]"
+            git pull --rebase --autostash || true
+            git push
+          else
+            echo "새 발행 없음 — 커밋 생략"
+          fi
