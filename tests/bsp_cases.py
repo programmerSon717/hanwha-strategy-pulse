@@ -187,6 +187,15 @@ def test_cstop10():
     other = csfit.score("핀다, 초대 CPO 선임", "핀다")[0]
     check("한화 기사가 더 높다", hanwha > other, True)
 
+    # 주 범주가 결정한다 — 보조 범주를 더해 역전시키면 안 된다.
+    # (2026-10-02: 단순 합산이던 때 GA·보험 기사가 네 범주를 먹어 100점이 되고
+    #  글로벌 기사는 54점에 그쳐, Top10 분포가 실측과 119%p 어긋났다.)
+    import csfit as _cf
+    check("보조 범주 반영률이 1 미만", _cf.SECONDARY_WEIGHT < 1.0, True)
+    multi = _cf.score("보험사 GA 채널 지급여력 규제 심사", "")[0]      # 네 범주
+    single = _cf.score("한화생명 베트남 법인 설립", "한화생명")[0]        # 한화(40)
+    check("범주 많다고 한화를 못 넘는다", single > multi, True)
+
     # 홍보성 쿼터 — 이틀에 한 건
     def row(k, head, ent, sc, text=""):
         return (k, head, "http://x", "hanwha_group", "", sc, 0, None, ent,

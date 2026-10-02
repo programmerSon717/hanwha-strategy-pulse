@@ -199,13 +199,44 @@ def select(rows: list, count: int | None = None, store=None,
 
     cap = settings.daily_brief_max_per_entity
     used: dict[str, int] = {}
+    cat_used: dict[str, int] = {}
     picked, deferred = [], []
+
+    # 최소 보장석을 **먼저** 채운다. 점수 경쟁에 맡기면 영영 못 들어온다.
+    reserved_keys = set()
+    for catg, floor in csfit.CATEGORY_FLOOR.items():
+        got = 0
+        for sc, r in normal:
+            if got >= floor:
+                break
+            if sc < csfit.FLOOR_MIN_SCORE:
+                continue
+            if csfit.primary_category(r[K_HEAD] or "") != catg:
+                continue
+            picked.append((sc, r))
+            reserved_keys.add(r[K_KEY])
+            cat_used[catg] = cat_used.get(catg, 0) + 1
+            ents = [e for e in (r[K_ENT] or "").split(",") if e]
+            h = ents[0] if ents else (r[K_PRI] or "_")
+            used[h] = used.get(h, 0) + 1
+            got += 1
+            print(f"[cstop10] {catg} 보장석: {(r[K_HEAD] or '')[:40]}")
+
     for sc, r in pr_pick + normal:
+        if r[K_KEY] in reserved_keys:
+            continue
         ents = [e for e in (r[K_ENT] or "").split(",") if e]
         head = ents[0] if ents else (r[K_PRI] or "_")
+        # 범주 상한 — 125건 실측 분포에 맞춘다. 안 걸면 국내 보험·GA 가 독식한다.
+        catg = csfit.primary_category(r[K_HEAD] or "", r[K_ENT] or "")
+        ccap = csfit.CATEGORY_CAP.get(catg, 2)
+        if cat_used.get(catg, 0) >= ccap:
+            deferred.append((sc, r))
+            continue
         if used.get(head, 0) >= cap:
             deferred.append((sc, r))
             continue
+        cat_used[catg] = cat_used.get(catg, 0) + 1
         used[head] = used.get(head, 0) + 1
         picked.append((sc, r))
         if len(picked) >= count:
