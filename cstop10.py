@@ -14,6 +14,7 @@ import brief
 import csfit
 import events
 import gnews
+import shared
 import telegraph
 import topics
 from config import settings
@@ -227,6 +228,19 @@ def select(rows: list, count: int | None = None, store=None,
                 else:
                     keep.append((sc, r))
             merged = keep
+
+    # 경영전략실이 이미 공유한 건은 뺀다.
+    # 과장님들이 아침에 올린 것을 봇이 또 올리면 중복이다. 비교는 제목 기준이다 —
+    # 같은 사건을 다른 매체가 쓰면 URL 이 전혀 다르다(2026-10-02 사용자 지정).
+    before = len(merged)
+    kept = []
+    for sc, r in merged:
+        hit = shared.already_shared(r[K_HEAD] or "")
+        if hit:
+            print(f"[cstop10] 경전실 기공유 제외: {(r[K_HEAD] or '')[:34]}")
+        else:
+            kept.append((sc, r))
+    merged = kept
 
     # 경영 판단에 쓸 데 없는 체인 기술·시세 기사는 뺀다 (사용자 지정).
     before = len(merged)

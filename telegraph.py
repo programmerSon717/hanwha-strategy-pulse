@@ -87,6 +87,42 @@ _BOILERPLATE = re.compile(
     r"|사진\s*=|이미지\s*=|자료\s*=\s*$", re.I)
 
 
+# 본문이 끝나고 추천·인기 기사 목록이 시작되는 지점.
+# 컨테이너 정규식이 (.*) 탐욕 매칭이라 문서 끝까지 먹는 바람에 "바비인형
+# 제조사 마텔 주가 폭등", "럭셔리 미니밴 시대" 같은 광고성 추천 기사 제목이
+# 본문에 섞여 들어왔다(2026-10-02). 여기서 잘라낸다.
+_TAIL = re.compile(
+    r"(?is)(관련\s*기사|많이\s*본|추천\s*기사|인기\s*기사|주요\s*뉴스"
+    r"|실시간\s*뉴스|핫\s*이슈|많이\s*읽은|이\s*기사[를와]?\s*공유"
+    r"|<footer|(?:id|class)=[\"\'][^\"\']*"
+    r"(?:related|recommend|popular|ranking|most[-_]?read|aside|footer)"
+    r"|taboola|outbrain|dable)")
+
+
+def _cut_tail(html_text: str) -> str:
+    m = _TAIL.search(html_text)
+    return html_text[:m.start()] if m and m.start() > 300 else html_text
+
+
+# 본문 문장이 아니라 **기사 제목**처럼 보이는 줄. 추천 목록의 잔재다.
+#
+# 한국어 기사 본문은 거의 언제나 종결어미로 끝난다(…했다 / …이다 / …전망이다).
+# 반면 제목은 명사·인용부호로 끝난다("럭셔리 미니밴 시대", "…머니무브").
+# 그래서 **종결어미가 없고 짧은 줄**을 제목으로 본다.
+# 짧이 제한을 두는 이유: 긴 줄은 제목일 가능성이 낮고, 표·인용처럼 종결어미가
+# 없는 본문도 있어서 과하게 자르지 않으려는 안전장치다.
+_SENT_END = re.compile(
+    r"(?:다|음|임|함|요|죠|까|냐|랴|네|오|소|듯|것|터|뿐|중|간|년|월|일|원|%|\))"
+    r"[.!?\u3002\"\'\u201d\u2019]*\s*$")
+HEADLINE_MAX_LEN = 90
+
+
+def _looks_like_headline(line: str) -> bool:
+    if len(line) > HEADLINE_MAX_LEN:
+        return False
+    return not _SENT_END.search(line)
+
+
 def _key(s: str) -> str:
     """제목 비교용 정규화 — 공백·기호를 지우고 비교한다."""
     return re.sub(r"[^\w가-힣]+", "", s or "")[:60]
@@ -147,6 +183,8 @@ def fetch_article(url: str, timeout: float = 15,
                 continue
             if _BOILERPLATE.search(line):
                 continue
+            if _looks_like_headline(line):
+                continue
             seen.add(line)
             out.append(line)
             total += len(line)
@@ -158,11 +196,11 @@ def fetch_article(url: str, timeout: float = 15,
     # 처음에는 첫 번째로 매치된 컨테이너를 그냥 썼는데, <article> 태그가
     # 관련기사 카드에도 붙어 있어 거기로 범위가 좁혀지면서 본문이 0자가 됐다.
     # 문서 전체도 후보에 넣어 둔다 — 컨테이너를 못 찾는 매체가 많다.
-    cands = [raw]
+    cands = [_cut_tail(raw)]
     for pat in _CONTAINERS:
         for m in re.finditer(pat, raw):
             if len(m.group(1)) > 300:
-                cands.append(m.group(1))
+                cands.append(_cut_tail(m.group(1)))
     paras = max((harvest(c) for c in cands),
                 key=lambda ps: sum(len(x) for x in ps), default=[])
     total = sum(len(x) for x in paras)

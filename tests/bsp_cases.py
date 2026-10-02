@@ -166,6 +166,10 @@ def test_event_dedup():
 
 
 def test_cstop10():
+    # 합성 데이터로 검사한다. 실제 공유 이력(groundtruth)이 끼어들면
+    # 가짜 제목이 '기공유'로 걸려 결과가 달라진다. 비워 두고 본다.
+    import shared as _sh
+    _sh._cache = []
     """📌 경전실 Top10 — 적합도·홍보성 판정 (2026-10-01)."""
     import csfit, cstop10, time
     print("\n[Top10] 경전실 적합도")
@@ -282,6 +286,10 @@ def test_cstop10():
 
 
 def test_cstop10_dedup():
+    # 합성 데이터로 검사한다. 실제 공유 이력(groundtruth)이 끼어들면
+    # 가짜 제목이 '기공유'로 걸려 결과가 달라진다. 비워 두고 본다.
+    import shared as _sh
+    _sh._cache = []
     """같은 사건 접기 + 기게재 제외 (2026-10-02 사용자 피드백 회귀).
 
     Top10 에 애큐온캐피탈 인수가 3건, 한화투자증권 자본확충이 2건 실렸다.
@@ -333,6 +341,10 @@ def test_cstop10_dedup():
 
 
 def test_cstop10_criteria():
+    # 합성 데이터로 검사한다. 실제 공유 이력(groundtruth)이 끼어들면
+    # 가짜 제목이 '기공유'로 걸려 결과가 달라진다. 비워 두고 본다.
+    import shared as _sh
+    _sh._cache = []
     """추천 서칭 순서 + 125건 가중치 + 크립토 선별 (2026-10-02 사용자 지정)."""
     import cstop10, csfit, time
     print("\n[Top10] 선정 기준")
@@ -436,6 +448,42 @@ def test_iv_paywall():
     t2 = str(c2)
     check("본문이 있으면 본문만", "요약문" in t2, False)
     check("본문이 맨 위", c2[0]["children"], ["기사 본문 첫 문단"])
+
+
+def test_shared_and_ads():
+    """경전실 기공유 제외 · 광고성 문구 제거 (2026-10-02 사용자 지정)."""
+    import shared, telegraph
+    print("\n[Top10] 기공유 제외 · 광고 제거")
+
+    # **토큰 Jaccard 만으로는 못 잡는다.** 매체가 다르면 제목이 전혀 다르다.
+    #   "포스코그룹, 우리금융지주 보유 지분 전량 매각"
+    #   "포스코, 우리금융 지분 6700억 블록딜…10년만에 엑시트"  → Jaccard 0.08
+    # 어간 겹침(포스코 ⊂ 포스코그룹)으로 세야 잡힌다.
+    a = shared._stems("포스코그룹, 우리금융지주 보유 지분 전량 매각")
+    b = shared._stems("포스코, 우리금융 지분 6700억 블록딜…10년만에 엑시트")
+    check("복합어가 달라도 어간으로 잡는다",
+          shared._overlap(a, b) >= shared.STEM_HITS, True)
+
+    c1 = shared._stems("금융위, 토큰증권 제도 내년 2월 시행 확정")
+    c2 = shared._stems("한화생명, 애큐온캐피탈 인수 본계약 체결")
+    check("무관한 기사는 안 걸린다",
+          shared._overlap(c1, c2) >= shared.STEM_HITS, False)
+    check("흔한 말은 신호로 안 센다", "업계" in shared._COMMON, True)
+
+    # 광고·추천 기사 제목 — 한국어 본문은 종결어미로 끝나고 제목은 안 끝난다
+    ads = ["550조 퇴직연금, DC·IRP 시장 확대…개인 자금 증권사 머니무브",
+           "바비인형 제조사 마텔, 주가 18% 폭등...어센틱 브랜즈 인수설",
+           "코스피, 반도체株 강세에 6900선 회복...코스닥은 4%대 급등"]
+    body = ["한화생명이 애큐온캐피탈 지분 50.54%를 4400억원에 인수하기로 했다.",
+            "금융감독원은 2일 보험업계와 간담회를 열고 심의 기준을 강화하기로 했다"]
+    check("광고성 제목은 제외",
+          all(telegraph._looks_like_headline(t) for t in ads), True)
+    check("본문 문장은 유지",
+          any(telegraph._looks_like_headline(t) for t in body), False)
+
+    # 추천 기사 영역은 통째로 잘라낸다 — 컨테이너 정규식이 문서 끝까지 먹는다
+    cut = telegraph._cut_tail("본문" * 200 + '<div class="related-news">추천</div>')
+    check("추천 영역 절단", "related" in cut, False)
 
 
 def test_due_gate():
@@ -676,6 +724,7 @@ def main():
     test_cstop10_dedup()
     test_cstop10_criteria()
     test_iv_paywall()
+    test_shared_and_ads()
     test_due_gate()
     test_source_weight()
     test_schema()
