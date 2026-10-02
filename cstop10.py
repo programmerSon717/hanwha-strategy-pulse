@@ -390,13 +390,19 @@ def _iv_url(r, real_url: str, store) -> str | None:
         mm = re.match(r"^.+?\((.+)\)$", nm)
         src_name = (mm.group(1) if mm else nm).strip()
 
-    # **본문을 제대로 못 가져오면 IV 페이지를 만들지 않는다.**
-    # 페이월 안내문("유료회원 전용입니다")을 본문이라고 실었다가 지적받았다.
-    # 이럴 땐 제목이 원래 기사로 바로 가는 게 낫다 — 빈 페이지를 거치게 하지 않는다.
+    # **페이지는 언제나 만든다 — 제목은 반드시 Instant View 로 열려야 한다.**
+    # 절대 규칙이다(2026-10-02). 본문을 못 가져왔다고 페이지를 안 만들면
+    # 그 기사만 브라우저로 튕겨 나간다.
+    # 본문이 없으면(유료기사·추출실패) 긁어온 척하지 않고, 우리가 가진
+    # 핵심·주요 내용으로 채우고 왜 전문이 없는지 밝힌 뒤 원문으로 보낸다.
     paras, why_fail = telegraph.fetch_article(real_url)
+    note = ""
     if why_fail:
-        print(f"[cstop10] IV 생략({why_fail}): {(r[K_HEAD] or '')[:36]}")
-        return None
+        note = (telegraph.NOTE_PAYWALL
+                if ("유료" in why_fail or "페이월" in why_fail)
+                else telegraph.NOTE_FAILED)
+        print(f"[cstop10] 본문 없음({why_fail}) — 요약으로 IV 구성: "
+              f"{(r[K_HEAD] or '')[:32]}")
 
     content = telegraph.build_content(
         summary=(r[K_LEDE] or "").strip(),
@@ -405,6 +411,7 @@ def _iv_url(r, real_url: str, store) -> str | None:
         excerpt=paras,
         source_url=real_url,
         source_name=src_name,
+        note=note,
     )
     url = telegraph.create_page(store, r[K_HEAD] or "", content,
                                 author=src_name or settings.bot_name)

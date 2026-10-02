@@ -62,6 +62,10 @@ PAYWALL_MARKERS = re.compile(
 # 본문으로 인정할 최소 분량. 이보다 짧으면 제대로 못 가져온 것이다.
 MIN_BODY_CHARS = 400
 
+# 본문이 없을 때 페이지에 적는 한 줄. 지어내지 않고 사실만 밝힌다.
+NOTE_PAYWALL = "원문이 유료회원 전용이라 본문을 싣지 않았습니다. 아래 링크에서 보세요."
+NOTE_FAILED = "본문을 가져오지 못했습니다. 아래 링크에서 원문을 보세요."
+
 # 기사 본문이 들어 있을 만한 영역. 먼저 여기를 찾고, 없으면 문서 전체에서 <p> 를 턴다.
 _CONTAINERS = [
     r'(?is)<article[^>]*>(.*?)</article>',
@@ -132,24 +136,38 @@ def fetch_excerpt(url: str, timeout: float = 15) -> list[str]:
 
 
 def build_content(summary: str, bullets: list[str], why: str,
-                  excerpt: list[str], source_url: str, source_name: str) -> list:
+                  excerpt: list[str], source_url: str, source_name: str,
+                  note: str = "") -> list:
     """Telegraph DOM.
 
-    **기사 본문이 맨 위다.** 핵심·주요 내용·시사점은 텔레그램 메시지에 이미
-    있으므로 여기서 또 보여줄 이유가 없다. 페이지를 열면 바로 기사가 나오고,
-    우리 분석은 맨 아래에 참고로 붙인다(2026-10-02 사용자 지정).
+    **페이지는 언제나 만든다.** 제목을 누르면 Instant View 로 열려야 한다는 것이
+    절대 규칙이다(2026-10-02 사용자 지정). 본문을 못 가져왔다고 페이지를 만들지
+    않으면 그 기사만 브라우저로 튕겨 나간다.
+
+    본문이 있으면 본문이 맨 위다. 없으면 — 유료기사라 긁지 않았거나 추출에
+    실패한 경우 — **지어내지 않고** 우리가 가진 핵심·주요 내용·시사점을 싣고,
+    왜 전문이 없는지 한 줄로 밝힌 뒤 원문으로 보낸다.
     """
     c = []
-    # 본문이 없으면 애초에 페이지를 만들지 않는다(호출부에서 거른다).
-    for t in excerpt:
-        c.append({"tag": "p", "children": [t]})
+    if excerpt:
+        for t in excerpt:
+            c.append({"tag": "p", "children": [t]})
+    else:
+        if note:
+            c.append({"tag": "blockquote", "children": [note]})
+        if summary:
+            c.append({"tag": "h4", "children": ["핵심"]})
+            c.append({"tag": "p", "children": [summary]})
+        if bullets:
+            c.append({"tag": "h4", "children": ["주요 내용"]})
+            c.append({"tag": "ul", "children": [
+                {"tag": "li", "children": [b]} for b in bullets]})
 
     c.append({"tag": "hr"})
     label = f"기사 원문 — {source_name}" if source_name else "기사 원문"
     c.append({"tag": "p", "children": [
         {"tag": "a", "attrs": {"href": source_url}, "children": [label]}]})
 
-    # 우리 분석은 참고로 맨 아래.
     if why:
         c.append({"tag": "h4", "children": ["경영전략실 시사점"]})
         c.append({"tag": "blockquote", "children": [why]})

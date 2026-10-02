@@ -403,10 +403,25 @@ def test_iv_paywall():
     paras, why = telegraph.fetch_article("https://m.thebell.co.kr/m/newsview.asp?x=1")
     check("유료 매체는 즉시 생략", (paras, bool(why)), ([], True))
 
-    # 본문이 없으면 페이지 내용도 만들지 않는다
-    c = telegraph.build_content("요약", ["불릿"], "왜", [], "http://x", "매체")
+    # **페이지는 언제나 만든다.** 제목은 반드시 Instant View 로 열려야 한다는
+    # 절대 규칙 때문이다. 본문이 없으면 긁어온 척하지 않고 우리 요약으로 채우고
+    # 왜 전문이 없는지 밝힌다.
+    c = telegraph.build_content("요약문", ["불릿1"], "왜중요", [],
+                                "http://x", "매체",
+                                note=telegraph.NOTE_PAYWALL)
     text = str(c)
-    check("본문 없으면 문단 없음", "요약" in text, False)
+    check("본문 없어도 페이지는 만든다", len(c) > 0, True)
+    check("우리 요약으로 채운다", "요약문" in text, True)
+    check("주요 내용도 싣는다", "불릿1" in text, True)
+    check("왜 전문이 없는지 밝힌다", "유료회원 전용" in text, True)
+    check("원문 링크는 항상", "http://x" in text, True)
+
+    # 본문이 있으면 본문이 맨 위, 요약은 싣지 않는다
+    c2 = telegraph.build_content("요약문", ["불릿1"], "왜중요",
+                                 ["기사 본문 첫 문단"], "http://x", "매체")
+    t2 = str(c2)
+    check("본문이 있으면 본문만", "요약문" in t2, False)
+    check("본문이 맨 위", c2[0]["children"], ["기사 본문 첫 문단"])
 
 
 def test_due_gate():
