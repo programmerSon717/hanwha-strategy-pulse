@@ -360,92 +360,90 @@ def _cut(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
-def render_item(r, *, lede=120, bullets=3, blen=58, why=130) -> str:
-    """기사 1건. 순위 번호는 붙이지 않는다(2026-10-01 사용자 지정).
+def render_item(r, **_ignored) -> str:
+    """기사 1건. **발행 당시 원문을 그대로 쓴다.**
 
-    길이 상한을 인자로 받는다 — 한 판에 안 들어가면 호출부가 조여서 다시 부른다.
+    원문(published.text)에는 ✅ 핵심 · 📂 주요 내용(불릿) · 🐧 · 🕒 · 기사 원문 ·
+    해시태그가 이미 완성된 형태로 들어 있다. 실시간 탭에 나간 바로 그 글이다.
+
+    **다시 조립하지 않는다.** 두 번 데였다.
+      1) 섹션을 뜯어 재조립하면서 html.escape 를 한 번 더 걸었다. 원문은 이미
+         이스케이프돼 있어서 `&#x27;` 가 화면에 그대로 찍혔다(2026-10-02).
+      2) 한 메시지에 맞추려고 불릿을 2개로 깎고 문장에 상한을 걸었더니
+         내용 품질이 눈에 띄게 떨어졌다.
+
+    여기서는 맨 윗줄(봇 이름)만 떼고 카테고리 줄로 바꿔 끼운다. 그뿐이다.
+    길이가 넘치면 render_all 이 **메시지를 나눈다** — 내용을 깎지 않는다.
     """
     e = html.escape
-    sec = _sections(r[K_TEXT] if len(r) > K_TEXT else "")
+    body = (r[K_TEXT] or "").strip() if len(r) > K_TEXT else ""
     cat = topics.display_name(r[K_PRI] or "") or ""
     tag = " · 홍보" if csfit.is_pr(r[K_HEAD] or "") else ""
+    head = f"<b>[{e(cat)}]</b>{tag}"
 
-    # 탭 이름을 그대로 붙인다(아이콘 포함). 어느 카테고리인지 한눈에 보여야 한다.
-    parts = [f"<b>[{e(cat)}]</b>{tag}",
-             f'<a href="{e(r[K_URL] or "")}"><b>{e(r[K_HEAD] or "")}</b></a>']
+    if body:
+        lines = body.split("\n")
+        if lines and settings.bot_name in lines[0]:
+            lines = lines[1:]
+            while lines and not lines[0].strip():
+                lines = lines[1:]
+        body = "\n".join(lines)
+        # 옛 메시지에 남은 영문 라벨만 펭귄으로 맞춘다.
+        body = body.replace("💡 <b>Why it matters</b>\n", "🐧 ")
+        return head + "\n\n" + body
 
-    ld = sec["lede"] or (r[K_LEDE] or "")
-    if ld:
-        parts.append(f"✅ {e(_cut(ld, lede))}")
-
-    bs = sec["bullets"][:bullets]
-    if bs:
-        parts.append("<blockquote>"
-                     + "\n".join(f"• {e(_cut(b, blen))}" for b in bs)
-                     + "</blockquote>")
-
-    wh = sec["why"] or (r[K_WHY] or "")
-    if wh:
-        parts.append(f"🐧 {e(_cut(wh, why))}")
-
-    when = sec["when"]
-    if not when:
-        ts = _ts(r[K_ORIGIN] if len(r) > K_ORIGIN else None) or _ts(r[K_SENT])
-        when = f"{datetime.fromtimestamp(ts, KST):%Y-%m-%d %H:%M} KST" if ts else ""
-    foot = " · ".join(x for x in (when, sec["source"]) if x)
-    if foot:
-        parts.append(f"🕒 {e(foot)}")
-    # 섹션 사이는 한 줄 띄운다 (2026-10-01 사용자 지정).
-    # 빈 줄도 텔레그램 길이에 포함되므로 SAFE_LIMIT 여유를 그만큼 잡아 둬야 한다.
-    return "\n\n".join(parts)
-
-
-# 한 판에 안 들어갈 때 차례로 조여 보는 단계. 위에서부터 시도한다.
-#
-# **순서가 중요하다. 문장을 중간에 자르기 전에 불릿 개수부터 줄인다.**
-# 불릿 하나가 빠지는 건 읽는 사람이 눈치채지 못하지만, 문장이 "…" 로 끊기면
-# 바로 보이고 뜻도 잘린다. 사용자 지적(2026-10-02): 펭귄 코멘트가 중간에 잘렸다.
-# lede·why 길이를 건드리는 건 불릿을 다 뺀 뒤의 최후 수단이다.
-TIGHTEN = [
-    dict(lede=400, bullets=4, blen=200, why=400),   # 자르지 않음
-    dict(lede=400, bullets=3, blen=200, why=400),   # 불릿만 줄인다
-    dict(lede=400, bullets=2, blen=200, why=400),
-    dict(lede=400, bullets=1, blen=200, why=400),
-    dict(lede=400, bullets=0, blen=0,   why=400),   # 불릿 전부 뺌
-    dict(lede=200, bullets=0, blen=0,   why=220),   # 여기서부터 문장을 줄인다
-    dict(lede=150, bullets=0, blen=0,   why=170),
-    dict(lede=100, bullets=0, blen=0,   why=110),
-]
+    # 원문이 없는 옛 행은 가진 필드로 최소 형태를 만든다. 여기서만 escape 한다.
+    parts = [head, "", f'<a href="{e(r[K_URL] or "")}"><b>{e(r[K_HEAD] or "")}</b></a>', ""]
+    if (r[K_LEDE] or "").strip():
+        parts += ["✅ <b>핵심</b>", e(r[K_LEDE].strip()), ""]
+    if (r[K_WHY] or "").strip():
+        parts += [f"🐧 {e(r[K_WHY].strip())}", ""]
+    ts = _ts(r[K_ORIGIN] if len(r) > K_ORIGIN else None) or _ts(r[K_SENT])
+    if ts:
+        parts.append(f"🕒 {datetime.fromtimestamp(ts, KST):%Y-%m-%d %H:%M} KST")
+    return "\n".join(parts)
 
 
 def render_all(picked: list, label: str) -> list[str]:
-    """**한 판**으로 만든다. 상한을 넘으면 단계적으로 조이고,
-    그래도 안 되면 그때만 나눈다."""
+    """메시지 목록. **내용을 깎지 않는다 — 넘치면 나눈다.**
+
+    한 판으로 보내려고 불릿을 줄이고 문장을 자르던 것을 그만뒀다. 기사 하나가
+    약 460자(보이는 길이)라 10건이면 4,600자다. 텔레그램 상한이 4,096자이니
+    2개로 나뉜다. 11개로 쪼개던 때와는 다르다.
+    """
     e = html.escape
     n_pr = sum(1 for _, r in picked if csfit.is_pr(r[K_HEAD] or ""))
     head = f"📌 <b>{e(settings.bot_name)} | 경전실 Top10</b>\n{e(label)}"
     if n_pr:
         head += f"  ·  홍보 {n_pr}건 포함"
 
-    for opt in TIGHTEN:
-        body = ITEM_GAP.join(render_item(r, **opt) for _, r in picked)
-        msg = head + ITEM_GAP + body
-        if visible_len(msg) <= SAFE_LIMIT:
-            return [msg]
+    items = [render_item(r) for _, r in picked]
 
-    # 최대로 조여도 안 들어가면 나눈다 (기사 경계에서만).
-    opt = TIGHTEN[-1]
-    msgs, cur = [], head
-    for _, r in picked:
-        item = render_item(r, **opt)
-        cand = cur + ITEM_GAP + item
-        if visible_len(cand) > SAFE_LIMIT and cur != head:
-            msgs.append(cur)
-            cur = item
-        else:
-            cur = cand
-    msgs.append(cur)
-    return msgs
+    # 몇 조각이 필요한지 먼저 센 뒤, 그 수에 맞춰 **고르게** 나눈다.
+    # 그냥 채우면 3,999자 + 731자 처럼 한쪽으로 쏠려 보기 나쁘다.
+    def pack(limit: int) -> list[str] | None:
+        out, cur = [], head
+        for it in items:
+            cand = cur + ITEM_GAP + it
+            if visible_len(cand) > limit and cur != head:
+                out.append(cur)
+                cur = it
+            else:
+                cur = cand
+        out.append(cur)
+        return out if all(visible_len(m) <= SAFE_LIMIT for m in out) else None
+
+    base = pack(SAFE_LIMIT)
+    n = len(base)
+    if n == 1:
+        return base
+    # 조각 수를 늘리지 않는 선에서 한도를 조여 균등하게 만든다.
+    total = visible_len(head) + sum(visible_len(i) + len(ITEM_GAP) for i in items)
+    for limit in range(total // n + 60, SAFE_LIMIT + 1, 40):
+        trial = pack(limit)
+        if trial and len(trial) == n:
+            return trial
+    return base
 
 
 async def run(client, store, dry_run: bool | None = None) -> int | None:

@@ -226,72 +226,44 @@ def test_cstop10():
     picked = cstop10.select(rows, count=10, store=S(None), now=now)
     check("홍보성은 맨 아래", csfit.is_pr(picked[-1][1][1]), True)
 
-    # 발행 원문에서 섹션을 뜯어 압축 렌더
+    # 발행 원문을 **그대로** 쓴다 — 재조립하지 않는다.
     from config import settings
     orig = (f"<b>{settings.bot_name}</b>\n\n🏢 <b>제목</b>\n\n"
-            "✅ <b>핵심</b>\n요약문입니다\n\n📂 <b>주요 내용</b>\n"
-            "<blockquote>• 불릿1\n• 불릿2\n• 불릿3\n• 불릿4</blockquote>\n\n"
+            "✅ <b>핵심</b>\n신용등급이 &#x27;긍정적 검토&#x27; 대상으로 상향\n\n"
+            "📂 <b>주요 내용</b>\n"
+            "<blockquote>• 불릿1\n• 불릿2\n• 불릿3\n• 불릿4\n• 불릿5</blockquote>\n\n"
             "💡 <b>Why it matters</b>\n왜 중요한가\n\n🕒 2026-10-01 15:45 KST\n\n"
             '<a href="http://x">기사 원문</a> - 보험저널\n\n#태그1 #태그2')
     r = row("z", "제목", "한화생명", 90, orig)
     out = cstop10.render_item(r)
-    check("순위 번호 없음", out.lstrip().startswith("<b>1"), False)
-    check("제목이 링크", '<a href="http://x"><b>제목</b></a>' in out, True)
-    # 카테고리 라벨 (2026-10-01 사용자 지정) — 어느 탭인지 한눈에 보여야 한다
     check("카테고리 라벨", "<b>[🏢 한화그룹]</b>" in out, True)
-    # 출처는 매체명만. "한화 금융계열사(비즈니스포스트)" 같은 내부 수집기 이름을 떼낸다
-    r3 = row("v", "제목", "한화생명", 90,
-             f"<b>{settings.bot_name}</b>\n\n🏢 <b>제목</b>\n\n"
-             '🕒 2026-10-01 15:45 KST\n\n<a href="http://x">기사 원문</a> - 한화 금융계열사(비즈니스포스트)')
-    out3 = cstop10.render_item(r3)
-    check("출처는 매체명만", "· 비즈니스포스트" in out3, True)
-    check("수집기 이름 제거", "한화 금융계열사(" in out3, False)
-    check("핵심 유지", "✅ 요약문입니다" in out, True)
-    check("불릿 유지", "• 불릿1" in out, True)
-    check("불릿 상한 3개", "• 불릿4" in out, False)
+    check("봇 이름 줄 제거", settings.bot_name not in out, True)
+    check("핵심 섹션 유지", "✅ <b>핵심</b>" in out, True)
+    check("주요 내용 섹션 유지", "📂 <b>주요 내용</b>" in out, True)
+    check("불릿 5개 그대로", out.count("• 불릿"), 5)
+    check("영문 라벨은 펭귄으로", "Why it matters" in out, False)
     check("펭귄", "🐧 왜 중요한가" in out, True)
-    check("영문 라벨 없음", "Why it matters" in out, False)
-    check("시각·매체 한 줄", "🕒 2026-10-01 15:45 KST · 보험저널" in out, True)
-    check("해시태그 제외", "#태그1" in out, False)
-    # 섹션 사이 한 줄 띄우기 (2026-10-01 사용자 지정)
-    check("핵심 앞 빈 줄", "</a>\n\n✅" in out, True)
-    check("불릿 앞 빈 줄", "\n\n<blockquote>" in out, True)
-    check("펭귄 앞 빈 줄", "</blockquote>\n\n🐧" in out, True)
-    check("시각 앞 빈 줄", "\n\n🕒" in out, True)
+    check("발행시각 유지", "🕒 2026-10-01 15:45 KST" in out, True)
 
-    # 길이 계산은 **보이는 텍스트** 기준이어야 한다. 긴 URL 에 속으면 안 된다.
-    long_url = "http://x/" + "a" * 500
-    r2 = row("w", "제목", "한화생명", 90,
-             f'<b>{settings.bot_name}</b>\n\n🏢 <b>제목</b>\n\n'
-             f'<a href="{long_url}">기사 원문</a> - 보험저널')
-    item = cstop10.render_item(r2)
-    check("URL 은 길이에 안 센다", cstop10.visible_len(item) < 100, True)
+    # **이중 이스케이프 회귀** (2026-10-02: 화면에 &#x27; 가 그대로 찍혔다)
+    # 원문은 이미 이스케이프돼 있다. 다시 escape 하면 &amp;#x27; 가 된다.
+    check("이중 이스케이프 없음", "&amp;#x27;" in out, False)
+    check("원문 엔티티는 그대로", "&#x27;" in out, True)
 
-    # 한 판 — 10건이 한 메시지에 들어가야 한다
+    # 원문이 없는 옛 행도 깨지지 않는다
+    out2 = cstop10.render_item(row("y", "옛제목", "한화생명", 50))
+    check("원문 없어도 렌더", "옛제목" in out2, True)
+
+    # 길이가 넘치면 **내용을 깎지 말고 메시지를 나눈다**
     many = [(90, row(f"k{i}", f"제목{i}", "한화생명", 90, orig)) for i in range(10)]
-    msgs = cstop10.render_all(many, "2026.10.01 Thu")
-    check("한 메시지로", len(msgs), 1)
-    # **자리가 남으면 문장을 자르지 않는다** (2026-10-02 사용자 지적).
-    # 줄이는 순서는 불릿 개수 → 그 다음이 문장 길이다.
-    import re as _re, html as _html
-    plain = _re.sub(r"<[^>]+>", "", _html.unescape(msgs[0]))
-    cut_lines = [l for l in plain.split("\n")
-                 if l.startswith(("✅", "🐧")) and l.rstrip().endswith("…")]
-    check("잘린 ✅·🐧 줄 없음", len(cut_lines), 0)
-    check("첫 단계는 무제한", cstop10.TIGHTEN[0]["why"] >= 400, True)
-    check("불릿부터 줄인다",
-          cstop10.TIGHTEN[1]["bullets"] < cstop10.TIGHTEN[0]["bullets"]
-          and cstop10.TIGHTEN[1]["why"] == cstop10.TIGHTEN[0]["why"], True)
-    check("기사 사이 구분선", cstop10.ITEM_GAP.strip() in msgs[0], True)
-    check("상한 이내", cstop10.visible_len(msgs[0]) <= cstop10.SAFE_LIMIT, True)
-
-    # 아주 길면 그때만 나눈다
-    huge = orig.replace("요약문입니다", "요" * 400).replace("왜 중요한가", "왜" * 400)
-    many2 = [(90, row(f"h{i}", f"제목{i}", f"회사{i}", 90, huge)) for i in range(40)]
-    msgs2 = cstop10.render_all(many2, "2026.10.01 Thu")
-    check("넘치면 분할", len(msgs2) > 1, True)
-    check("분할 조각도 상한 이내",
-          all(cstop10.visible_len(m) <= cstop10.SAFE_LIMIT for m in msgs2), True)
+    msgs = cstop10.render_all(many, "2026.10.02 Fri")
+    check("불릿을 깎지 않는다", all(m.count("• 불릿") % 5 == 0 for m in msgs), True)
+    check("조각마다 상한 이내",
+          all(cstop10.visible_len(m) <= cstop10.SAFE_LIMIT for m in msgs), True)
+    # 고르게 나뉘어야 한다 — 3,999 + 731 처럼 쏠리면 안 된다
+    if len(msgs) > 1:
+        lens = [cstop10.visible_len(m) for m in msgs]
+        check("조각 길이가 고르다", max(lens) - min(lens) < cstop10.SAFE_LIMIT // 2, True)
 
 
 def test_cstop10_dedup():
