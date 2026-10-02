@@ -482,6 +482,35 @@ class Store:
                 (f"msg:{scope}", day_start, day_end)).fetchone()
         return bool(row)
 
+    def get_setting(self, key: str) -> str | None:
+        with self._conn() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS setting ("
+                      "  k TEXT PRIMARY KEY, v TEXT)")
+            row = c.execute("SELECT v FROM setting WHERE k=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def put_setting(self, key: str, val: str):
+        with self._conn() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS setting ("
+                      "  k TEXT PRIMARY KEY, v TEXT)")
+            c.execute("INSERT OR REPLACE INTO setting (k, v) VALUES (?,?)",
+                      (key, val))
+
+    def get_iv_url(self, key: str) -> str | None:
+        with self._conn() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS iv_page ("
+                      "  key TEXT PRIMARY KEY, url TEXT, ts REAL)")
+            row = c.execute("SELECT url FROM iv_page WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def put_iv_url(self, key: str, url: str):
+        import time
+        with self._conn() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS iv_page ("
+                      "  key TEXT PRIMARY KEY, url TEXT, ts REAL)")
+            c.execute("INSERT OR REPLACE INTO iv_page (key, url, ts)"
+                      " VALUES (?,?,?)", (key, url, time.time()))
+
     def get_resolved_url(self, src: str) -> str | None:
         with self._conn() as c:
             c.execute("CREATE TABLE IF NOT EXISTS resolved_url ("

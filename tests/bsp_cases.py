@@ -241,6 +241,14 @@ def test_cstop10():
     # 원문에는 링크가 맨 아래 "기사 원문" 에만 있다.
     check("제목이 링크", '<a href="http://x"><b>제목</b></a>' in out, True)
     check("아이콘은 링크 밖에", "🏢 <a href=" in out, True)
+
+    # Instant View — 제목은 telegra.ph 로 링크한다. 원래 기사 주소로 링크하면
+    # IV 템플릿이 등록된 도메인만 되고(글로벌이코노믹 ○) 나머지는
+    # "Open this link?" 가 뜨며 브라우저로 나간다(newsis AMP ×).
+    out_iv = cstop10.render_item(r, url="http://real", iv="https://telegra.ph/x")
+    check("제목은 telegra.ph 로",
+          '<a href="https://telegra.ph/x"><b>제목</b></a>' in out_iv, True)
+    check('본문 "기사 원문" 은 실제 기사로', "http://real" in out_iv, True)
     check("봇 이름 줄 제거", settings.bot_name not in out, True)
     check("핵심 섹션 유지", "✅ <b>핵심</b>" in out, True)
     check("주요 내용 섹션 유지", "📂 <b>주요 내용</b>" in out, True)
@@ -262,7 +270,9 @@ def test_cstop10():
     many = [(90, row(f"k{i}", f"제목{i}", "한화생명", 90, orig)) for i in range(10)]
     msgs, previews = cstop10.render_all(many, "2026.10.02 Fri")
     check("불릿을 깎지 않는다", all(m.count("• 불릿") % 5 == 0 for m in msgs), True)
-    check("조각마다 미리보기 주소 1개", len(previews), len(msgs))
+    # 미리보기 카드는 끈다 — 크고 거슬린다는 사용자 지적(2026-10-02).
+    # 대신 제목을 telegra.ph 로 링크해 Instant View 로 열리게 한다.
+    check("미리보기 카드 없음", previews, [])
     check("조각마다 상한 이내",
           all(cstop10.visible_len(m) <= cstop10.SAFE_LIMIT for m in msgs), True)
     # 고르게 나뉘어야 한다 — 3,999 + 731 처럼 쏠리면 안 된다

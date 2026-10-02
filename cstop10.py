@@ -14,6 +14,7 @@ import brief
 import csfit
 import events
 import gnews
+import telegraph
 import topics
 from config import settings
 
@@ -361,6 +362,49 @@ def _cut(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
+def _iv_url(r, real_url: str, store) -> str | None:
+    """이 기사의 telegra.ph 페이지 주소. 없으면 만든다.
+
+    제목을 여기로 링크하면 **눌렀을 때 텔레그램 안에서 Instant View 로 열린다.**
+    원래 기사 주소로 링크하면 매체마다 복불복이다 — IV 템플릿이 등록된
+    도메인만 되고(글로벌이코노믹 ○), 아닌 곳은 "Open this link?" 가 뜨면서
+    브라우저로 나간다(newsis AMP ×). telegra.ph 는 항상 된다.
+    """
+    if store is None:
+        return None
+    key = r[K_KEY]
+    hit = store.get_iv_url(key)
+    if hit:
+        return hit
+
+    body = (r[K_TEXT] or "") if len(r) > K_TEXT else ""
+    bullets = []
+    m = re.search(r"<blockquote>(.*?)</blockquote>", body, re.S)
+    if m:
+        bullets = [html.unescape(re.sub(r"<[^>]+>", "", b)).strip(" •").strip()
+                   for b in m.group(1).split("\n") if b.strip()]
+    src_name = ""
+    m = re.search(r"</a>\s*-\s*(.+?)(?:\n|$)", body)
+    if m:
+        nm = html.unescape(m.group(1)).strip()
+        mm = re.match(r"^.+?\((.+)\)$", nm)
+        src_name = (mm.group(1) if mm else nm).strip()
+
+    content = telegraph.build_content(
+        summary=(r[K_LEDE] or "").strip(),
+        bullets=bullets,
+        why=(r[K_WHY] or "").strip(),
+        excerpt=telegraph.fetch_excerpt(real_url),
+        source_url=real_url,
+        source_name=src_name,
+    )
+    url = telegraph.create_page(store, r[K_HEAD] or "", content,
+                                author=src_name or settings.bot_name)
+    if url:
+        store.put_iv_url(key, url)
+    return url
+
+
 def _link_headline(body: str, url: str) -> str:
     """제목 줄을 눌러 기사로 갈 수 있게 링크로 감싼다.
 
@@ -384,7 +428,8 @@ def _link_headline(body: str, url: str) -> str:
     return "\n".join(lines)
 
 
-def render_item(r, url: str | None = None, **_ignored) -> str:
+def render_item(r, url: str | None = None, iv: str | None = None,
+                **_ignored) -> str:
     """기사 1건. **발행 당시 원문을 그대로 쓴다.**
 
     원문(published.text)에는 ✅ 핵심 · 📂 주요 내용(불릿) · 🐧 · 🕒 · 기사 원문 ·
@@ -420,7 +465,8 @@ def render_item(r, url: str | None = None, **_ignored) -> str:
         if url and src and url != src:
             body = body.replace(html.escape(src, quote=True), html.escape(url, quote=True))
             body = body.replace(src, url)
-        body = _link_headline(body, url or src)
+        # 제목은 Instant View 되는 telegra.ph 로, 본문 속 "기사 원문" 은 실제 기사로.
+        body = _link_headline(body, iv or url or src)
         return head + "\n\n" + body
 
     # 원문이 없는 옛 행은 가진 필드로 최소 형태를 만든다. 여기서만 escape 한다.
@@ -461,7 +507,9 @@ def render_all(picked: list, label: str, _store=None) -> tuple[list[str], list[s
     # 구글뉴스 리디렉터를 실제 기사 주소로 바꾼다. 발행 링크의 86% 가 그것이다.
     # 미리보기 카드가 붙으려면 메타태그가 있는 실제 기사 주소여야 한다.
     urls = [gnews.resolve(r[K_URL] or "", _store) for _, r in picked]
-    items = [render_item(r, url=u) for (_, r), u in zip(picked, urls)]
+    ivs = [_iv_url(r, u, _store) for (_, r), u in zip(picked, urls)]
+    items = [render_item(r, url=u, iv=iv)
+             for (_, r), u, iv in zip(picked, urls, ivs)]
 
     # 몇 조각이 필요한지 먼저 센 뒤, 그 수에 맞춰 **고르게** 나눈다.
     # 그냥 채우면 3,999자 + 731자 처럼 한쪽으로 쏠려 보기 나쁘다.
@@ -480,14 +528,14 @@ def render_all(picked: list, label: str, _store=None) -> tuple[list[str], list[s
     base = pack(SAFE_LIMIT)
     n = len(base)
     if n == 1:
-        return base, urls[:1]
+        return base, []
     # 조각 수를 늘리지 않는 선에서 한도를 조여 균등하게 만든다.
     total = visible_len(head) + sum(visible_len(i) + len(ITEM_GAP) for i in items)
     for limit in range(total // n + 60, SAFE_LIMIT + 1, 40):
         trial = pack(limit)
         if trial and len(trial) == n:
-            return trial, _first_urls(trial, items, urls)
-    return base, _first_urls(base, items, urls)
+            return trial, []
+    return base, []
 
 
 async def run(client, store, dry_run: bool | None = None) -> int | None:
