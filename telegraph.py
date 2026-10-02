@@ -22,8 +22,10 @@ import httpx
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120 Safari/537.36")
 API = "https://api.telegra.ph"
-EXCERPT_PARAS = 4          # 본문에서 인용할 문단 수
-EXCERPT_CHARS = 1200       # 그 상한
+# 본문을 어디까지 실을지. 페이지를 열면 **바로 기사 본문**이 나와야 한다는
+# 사용자 지정(2026-10-02)에 따라 넉넉히 잡는다. 줄이려면 여기만 고친다.
+EXCERPT_PARAS = 40
+EXCERPT_CHARS = 12000
 
 
 def get_token(store) -> str | None:
@@ -53,13 +55,22 @@ def fetch_excerpt(url: str, timeout: float = 15) -> list[str]:
         body = r.text
     except Exception:
         return []
-    body = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", body)
+    body = re.sub(r"(?is)<(script|style|nav|header|footer|aside)[^>]*>.*?</\1>",
+                  " ", body)
     paras = []
+    seen = set()
     for m in re.finditer(r"(?is)<p[^>]*>(.*?)</p>", body):
         t = re.sub(r"(?is)<[^>]+>", " ", m.group(1))
         t = _html.unescape(re.sub(r"\s+", " ", t)).strip()
         if len(t) < 30:
             continue
+        # 저작권 안내·구독 유도·기자 이메일 같은 상투 문구는 뺀다.
+        if re.search(r"무단\s*전재|재배포\s*금지|저작권자|구독하기|기사제보"
+                     r"|^ⓒ|Copyright", t):
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
         paras.append(t)
         if len(paras) >= EXCERPT_PARAS:
             break
@@ -75,27 +86,29 @@ def fetch_excerpt(url: str, timeout: float = 15) -> list[str]:
 
 def build_content(summary: str, bullets: list[str], why: str,
                   excerpt: list[str], source_url: str, source_name: str) -> list:
-    """Telegraph DOM. 우리 분석이 먼저, 본문 발췌는 그 다음, 끝에 원문 링크."""
+    """Telegraph DOM.
+
+    **기사 본문이 맨 위다.** 핵심·주요 내용·시사점은 텔레그램 메시지에 이미
+    있으므로 여기서 또 보여줄 이유가 없다. 페이지를 열면 바로 기사가 나오고,
+    우리 분석은 맨 아래에 참고로 붙인다(2026-10-02 사용자 지정).
+    """
     c = []
-    if summary:
-        c.append({"tag": "h4", "children": ["핵심"]})
+    if excerpt:
+        for t in excerpt:
+            c.append({"tag": "p", "children": [t]})
+    elif summary:
+        # 본문을 못 가져온 경우에만 요약으로 대신한다.
         c.append({"tag": "p", "children": [summary]})
-    if bullets:
-        c.append({"tag": "h4", "children": ["주요 내용"]})
-        c.append({"tag": "ul",
-                  "children": [{"tag": "li", "children": [b]} for b in bullets]})
+
+    c.append({"tag": "hr"})
+    label = f"기사 원문 — {source_name}" if source_name else "기사 원문"
+    c.append({"tag": "p", "children": [
+        {"tag": "a", "attrs": {"href": source_url}, "children": [label]}]})
+
+    # 우리 분석은 참고로 맨 아래.
     if why:
         c.append({"tag": "h4", "children": ["경영전략실 시사점"]})
         c.append({"tag": "blockquote", "children": [why]})
-    if excerpt:
-        c.append({"tag": "hr"})
-        c.append({"tag": "h4", "children": ["본문 발췌"]})
-        for t in excerpt:
-            c.append({"tag": "p", "children": [t]})
-    c.append({"tag": "hr"})
-    label = f"기사 전문 보기 — {source_name}" if source_name else "기사 전문 보기"
-    c.append({"tag": "p", "children": [
-        {"tag": "a", "attrs": {"href": source_url}, "children": [label]}]})
     return c
 
 
