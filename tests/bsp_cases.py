@@ -237,6 +237,10 @@ def test_cstop10():
     r = row("z", "제목", "한화생명", 90, orig)
     out = cstop10.render_item(r)
     check("카테고리 라벨", "<b>[🏢 한화그룹]</b>" in out, True)
+    # 제목을 눌러 기사로 갈 수 있어야 한다 (2026-10-02 사용자 지정).
+    # 원문에는 링크가 맨 아래 "기사 원문" 에만 있다.
+    check("제목이 링크", '<a href="http://x"><b>제목</b></a>' in out, True)
+    check("아이콘은 링크 밖에", "🏢 <a href=" in out, True)
     check("봇 이름 줄 제거", settings.bot_name not in out, True)
     check("핵심 섹션 유지", "✅ <b>핵심</b>" in out, True)
     check("주요 내용 섹션 유지", "📂 <b>주요 내용</b>" in out, True)

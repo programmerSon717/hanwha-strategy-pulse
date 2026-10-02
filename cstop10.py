@@ -360,6 +360,29 @@ def _cut(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
+def _link_headline(body: str, url: str) -> str:
+    """제목 줄을 눌러 기사로 갈 수 있게 링크로 감싼다.
+
+    원문의 제목 줄은 `🏢 <b>제목</b>` 형태라 눌러도 아무 일이 없다. 링크는
+    맨 아래 "기사 원문" 에만 있어서 Top10 처럼 여러 건이 이어진 글에서는
+    제목에서 바로 넘어가는 게 자연스럽다(2026-10-02 사용자 지정).
+
+    이미 <a> 로 감싸여 있으면 건드리지 않는다.
+    """
+    if not url:
+        return body
+    lines = body.split("\n")
+    for i, ln in enumerate(lines):
+        if "<a " in ln:
+            break
+        m = re.match(r"^(\S+)\s+<b>(.+)</b>\s*$", ln)
+        if m:
+            icon, title = m.group(1), m.group(2)
+            lines[i] = f'{icon} <a href="{html.escape(url, quote=True)}"><b>{title}</b></a>'
+            break
+    return "\n".join(lines)
+
+
 def render_item(r, **_ignored) -> str:
     """기사 1건. **발행 당시 원문을 그대로 쓴다.**
 
@@ -390,6 +413,7 @@ def render_item(r, **_ignored) -> str:
         body = "\n".join(lines)
         # 옛 메시지에 남은 영문 라벨만 펭귄으로 맞춘다.
         body = body.replace("💡 <b>Why it matters</b>\n", "🐧 ")
+        body = _link_headline(body, r[K_URL] or "")
         return head + "\n\n" + body
 
     # 원문이 없는 옛 행은 가진 필드로 최소 형태를 만든다. 여기서만 escape 한다.
