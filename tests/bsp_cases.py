@@ -345,6 +345,51 @@ def test_cstop10_dedup():
           sum(1 for h in heads if "한화" in h), 1)
 
 
+def test_cstop10_criteria():
+    """추천 서칭 순서 + 125건 가중치 + 크립토 선별 (2026-10-02 사용자 지정)."""
+    import cstop10, csfit, time
+    print("\n[Top10] 선정 기준")
+
+    def row(k, head, ent, sc, pri="insurance_finance", et="other"):
+        return (k, head, "http://x", pri, "", sc, 0, f"c{k}", ent,
+                "요약", "왜", time.time(), et, time.time(), "")
+
+    # 티어 — 한화 여부는 **제목**으로 본다.
+    # entities 로 보면 모델이 한화생명을 폭넓게 적는 탓에 "퇴직연금 기금화"
+    # 까지 T1 이 돼 10건 중 7건이 1티어로 몰린다.
+    check("제목이 한화면 T1",
+          cstop10.tier_of(row("a", "한화생명, 애큐온캐피탈 인수", "한화생명", 90)), 1)
+    check("엔티티만 한화면 T1 아님",
+          cstop10.tier_of(row("b", "퇴직연금 기금화 논의 본격화", "한화생명", 60)) != 1, True)
+    check("규제는 T3",
+          cstop10.tier_of(row("c", "금융위, 토큰증권 제도 시행", "금융위원회", 70,
+                              pri="regulation_policy")), 3)
+
+    # 티어는 **가산점**이다. 절대 우선키로 두면 좋은 기사가 낮은 티어라는
+    # 이유로 통째로 빠진다(69점 규제 기사가 45점 T2 뒤로 밀려 탈락했다).
+    check("티어가 높을수록 가산점 큼",
+          cstop10.TIER_BONUS[1] > cstop10.TIER_BONUS[3] > cstop10.TIER_BONUS[5], True)
+    check("가산점이 점수차를 뒤집을 만큼 크지 않다",
+          cstop10.TIER_BONUS[1] - cstop10.TIER_BONUS[5] < 50, True)
+
+    # 크립토 — 제도·사업은 싣고 체인 기술·시세는 뺀다
+    check("STO 제도는 게재",
+          csfit.is_crypto_tech("금융위, 토큰증권(STO) 제도 내년 2월 시행"), False)
+    check("스테이블코인 사업도 게재",
+          csfit.is_crypto_tech("카카오그룹, 원화 스테이블코인 사업 추진"), False)
+    check("체인 업그레이드는 제외",
+          csfit.is_crypto_tech("이더리움 덴쿤 업그레이드…레이어2 가스비 절감"), True)
+    check("시세 기사도 제외",
+          csfit.is_crypto_tech("비트코인 8만5500달러 터치 후 급락"), True)
+
+    rows = [row("x", "이더리움 덴쿤 업그레이드 완료", "이더리움", 60),
+            row("y", "한화생명, 애큐온캐피탈 인수 본계약", "한화생명", 90)]
+    picked = cstop10.select(rows, count=10, store=None)
+    heads = [r[1] for _, r in picked]
+    check("기술 기사는 Top10 에 안 들어감",
+          any("덴쿤" in h for h in heads), False)
+
+
 def test_due_gate():
     """--if-due 게이트 (2026-10-02 누락 사고 회귀).
 
@@ -581,6 +626,7 @@ def main():
     test_event_dedup()
     test_cstop10()
     test_cstop10_dedup()
+    test_cstop10_criteria()
     test_due_gate()
     test_source_weight()
     test_schema()

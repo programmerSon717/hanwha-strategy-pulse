@@ -10,6 +10,7 @@ import html
 import re
 from datetime import datetime, timedelta, timezone
 
+import brief
 import csfit
 import events
 import topics
@@ -128,6 +129,48 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type) -> bool:
     return score >= 3
 
 
+# 추천 서칭 순서를 **가산점**으로 반영한다.
+#
+# 처음엔 티어를 절대 1차 정렬키로 뒀다. 그랬더니 69점짜리 규제 기사
+# ("보험사 GA 관리 평가 지표…K-ICS 반영")가 45점짜리 T2 기사 뒤로 밀려
+# Top10 에서 아예 빠졌다. 추천 순서는 **어디부터 찾아볼지**의 우선순위지
+# 품질 판단을 뒤집으라는 뜻이 아니다(2026-10-02).
+# 가산점이면 티어가 낮아도 내용이 좋으면 올라온다.
+TIER_BONUS = {1: 25, 2: 15, 3: 10, 4: 5, 5: 0}
+
+
+def tier_of(r) -> int:
+    """추천 서칭 순서상의 티어. **한화 여부는 제목으로 판단한다.**
+
+        1 한화그룹 관련          2 진행중인 M&A · 보험
+        3 규제 · 지배구조        4 한화 금융계열사(곁다리 언급)
+        5 기타 (네이버 · 카카오 · 토스 · 메리츠 등)
+
+    brief.tier 는 entities 로 판단한다. Morning Brief 에서는 그게 맞다 —
+    사용자가 "한화면 무조건 1순위"로 확정했다. 다만 Top10 에 그대로 쓰면
+    모델이 main_entities 에 한화생명을 폭넓게 적는 탓에 "퇴직연금 기금화"
+    같은 기사까지 T1 이 돼 10건 중 7건이 1티어로 몰린다. 티어가 아무것도
+    가르지 못한다. 그래서 여기서는 **기사의 핵심이 한화인지**를 제목으로 본다.
+    """
+    title = r[K_HEAD] or ""
+    ents = r[K_ENT] or ""
+    etype = r[K_ETYPE] if len(r) > K_ETYPE else ""
+    pri = r[K_PRI] or ""
+
+    if csfit.primary_category(title) == "한화":
+        return 1
+    if pri == "ma_governance" or etype in events.ACTION_GROUPS and \
+            events.ACTION_GROUPS.get(etype) == "deal":
+        return 2
+    if pri == "insurance_finance":
+        return 2
+    if pri == "regulation_policy":
+        return 3
+    if "한화" in ents:
+        return 4
+    return 5
+
+
 def select(rows: list, count: int | None = None, store=None,
            now: float | None = None) -> list:
     """적합도 순 Top N.
@@ -183,7 +226,22 @@ def select(rows: list, count: int | None = None, store=None,
                     keep.append((sc, r))
             merged = keep
 
-    ranked = merged
+    # 경영 판단에 쓸 데 없는 체인 기술·시세 기사는 뺀다 (사용자 지정).
+    before = len(merged)
+    merged = [(sc, r) for sc, r in merged
+              if not csfit.is_crypto_tech(r[K_HEAD] or "")]
+    if before != len(merged):
+        print(f"[cstop10] 크립토 기술·시세 {before - len(merged)}건 제외")
+
+    # **1차 정렬키는 사용자가 지정한 추천 서칭 순서다.**
+    #   1 한화  2 M&A·보험  3 규제·지배구조  4 한화 곁다리  5 기타
+    # 125건 실측 가중치(csfit)는 **같은 티어 안에서의** 2차 정렬키다.
+    # 기준의 위계가 그렇다 — 추천 순서가 틀이고, 125건은 그 안에서 과장님들이
+    # 실제로 무엇을 골랐는지 보여주는 성향이다(2026-10-02 사용자 설명).
+    def rank_key(x):
+        return -(x[0] + TIER_BONUS.get(tier_of(x[1]), 0))
+
+    ranked = sorted(merged, key=rank_key)
 
     pr = [(sc, r) for sc, r in ranked if csfit.is_pr(r[K_HEAD] or "")]
     normal = [(sc, r) for sc, r in ranked if not csfit.is_pr(r[K_HEAD] or "")]
@@ -246,7 +304,8 @@ def select(rows: list, count: int | None = None, store=None,
             break
         picked.append((sc, r))
 
-    picked.sort(key=lambda x: (csfit.is_pr(x[1][K_HEAD] or ""), -x[0]))
+    # 최종 배열도 추천 순서를 따른다. 홍보성은 맨 아래.
+    picked.sort(key=lambda x: (csfit.is_pr(x[1][K_HEAD] or ""), rank_key(x)))
     return picked
 
 
