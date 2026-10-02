@@ -395,7 +395,8 @@ def _iv_url(r, real_url: str, store) -> str | None:
     # 그 기사만 브라우저로 튕겨 나간다.
     # 본문이 없으면(유료기사·추출실패) 긁어온 척하지 않고, 우리가 가진
     # 핵심·주요 내용으로 채우고 왜 전문이 없는지 밝힌 뒤 원문으로 보낸다.
-    paras, why_fail = telegraph.fetch_article(real_url)
+    paras, why_fail = telegraph.fetch_article(real_url,
+                                              title=r[K_HEAD] or "")
     note = ""
     if why_fail:
         note = (telegraph.NOTE_PAYWALL

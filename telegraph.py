@@ -66,16 +66,34 @@ MIN_BODY_CHARS = 400
 NOTE_PAYWALL = "원문이 유료회원 전용이라 본문을 싣지 않았습니다. 아래 링크에서 보세요."
 NOTE_FAILED = "본문을 가져오지 못했습니다. 아래 링크에서 원문을 보세요."
 
-# 기사 본문이 들어 있을 만한 영역. 먼저 여기를 찾고, 없으면 문서 전체에서 <p> 를 턴다.
+# 기사 본문이 들어 있을 만한 영역. 후보를 모두 뽑아 보고 가장 많이 나오는 쪽을 쓴다.
 _CONTAINERS = [
+    r'(?is)<div[^>]*itemprop=["\']articleBody["\'][^>]*>(.*)',
+    r'(?is)<article[^>]*itemprop=["\']articleBody["\'][^>]*>(.*)',
+    r'(?is)<(?:div|article|section)[^>]*(?:id|class)=["\'][^"\']*'
+    r'(?:article[-_]?body|news[-_]?body|article[-_]?content|article[-_]?txt'
+    r'|view[-_]?con|articleCont|news[-_]?txt|^article$)[^"\']*["\'][^>]*>(.*)',
     r'(?is)<article[^>]*>(.*?)</article>',
-    r'(?is)<div[^>]*itemprop=["\']articleBody["\'][^>]*>(.*?)</div>\s*</div>',
-    r'(?is)<div[^>]*(?:id|class)=["\'][^"\']*(?:article[-_]?body|news[-_]?body'
-    r'|article[-_]?content|view[-_]?con|articleCont)[^"\']*["\'][^>]*>(.*?)</div>\s*</div>',
 ]
 
+# 본문이 아닌 상투 문구. 매체마다 다른 자리에 끼어든다.
+_BOILERPLATE = re.compile(
+    r"무단\s*전재|재배포\s*금지|저작권자|구독하기|기사제보|ⓒ|Copyright"
+    r"|@.*\.(?:com|co\.kr)|기자\s*$|댓글|로그인|회원가입|많이\s*본"
+    r"|관련\s*기사|이전\s*기사|다음\s*기사"
+    # 브라우저·앱 권유 안내 (잠깐! 현재 Internet Explorer 8이하 …)
+    r"|Internet\s*Explorer|최신\s*브라우저|브라우저\s*\(Browser\)|앱\s*설치"
+    r"|푸시\s*알림|뉴스레터\s*구독|카카오톡\s*채널|네이버에서\s*구독"
+    r"|사진\s*=|이미지\s*=|자료\s*=\s*$", re.I)
 
-def fetch_article(url: str, timeout: float = 15) -> tuple[list[str], str]:
+
+def _key(s: str) -> str:
+    """제목 비교용 정규화 — 공백·기호를 지우고 비교한다."""
+    return re.sub(r"[^\w가-힣]+", "", s or "")[:60]
+
+
+def fetch_article(url: str, timeout: float = 15,
+                  title: str = "") -> tuple[list[str], str]:
     """(문단 목록, 실패 사유). 성공하면 사유는 빈 문자열.
 
     **못 가져오면 빈 목록과 사유를 돌려준다.** 호출부는 그때 IV 페이지를
@@ -93,19 +111,45 @@ def fetch_article(url: str, timeout: float = 15) -> tuple[list[str], str]:
 
     raw = re.sub(r"(?is)<(script|style|nav|header|footer|aside|form)[^>]*>.*?</\1>",
                  " ", raw)
+    # 페이지 자신의 제목도 비교 대상에 넣는다. 우리 headline 은 모델이 다시 쓴
+    # 것이라 원문 제목과 글자가 달라, 그것만으로는 중복을 못 거른다.
+    page_title = ""
+    m = re.search(r'(?is)<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', raw)
+    if not m:
+        m = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw)
+    if m:
+        page_title = _html.unescape(m.group(1)).strip()
+
     def harvest(scope: str) -> list[str]:
+        """문단을 뽑는다.
+
+        **<p> 태그만 보면 안 된다.** 비즈니스포스트는 <p> 1개에 <br> 47개,
+        뉴시스는 <p> 0개에 <br> 24개다 — 문단을 <br> 로 나누는 매체가 많다.
+        그래서 <br>·</p>·</div>·</li> 를 전부 줄바꿈으로 바꾼 뒤 줄 단위로 센다.
+        """
+        t = re.sub(r"(?is)<br\s*/?>", "\n", scope)
+        t = re.sub(r"(?is)</(p|div|li|h[1-6]|td|tr)>", "\n", t)
+        t = re.sub(r"(?is)<[^>]+>", " ", t)
+        t = _html.unescape(t)
+
         out, seen, total = [], set(), 0
-        for m in re.finditer(r"(?is)<p[^>]*>(.*?)</p>", scope):
-            t = re.sub(r"(?is)<[^>]+>", " ", m.group(1))
-            t = _html.unescape(re.sub(r"\s+", " ", t)).strip()
-            if len(t) < 30 or t in seen:
+        keys = [k for k in (_key(title), _key(page_title)) if len(k) >= 12]
+        for line in t.split("\n"):
+            line = re.sub(r"[ \t\u00a0]+", " ", line).strip()
+            # "본문 | 매체명" 꼬리를 떼낸다. 페이지 <title> 이 섞여 들어온다.
+            line = re.sub(r"\s*\|\s*[^|]{1,24}\s*$", "", line).strip()
+            if len(line) < 30 or line in seen:
                 continue
-            if re.search(r"무단\s*전재|재배포\s*금지|저작권자|구독하기|기사제보"
-                         r"|^ⓒ|Copyright|이메일|기자\s*$", t):
+            # 제목이 본문 첫 줄로 또 들어오는 매체가 많다.
+            # Telegraph 가 제목을 이미 맨 위에 보여주므로 본문에서는 뺀다.
+            lk = _key(line)
+            if any(lk == k or lk in k or k in lk for k in keys):
                 continue
-            seen.add(t)
-            out.append(t)
-            total += len(t)
+            if _BOILERPLATE.search(line):
+                continue
+            seen.add(line)
+            out.append(line)
+            total += len(line)
             if len(out) >= EXCERPT_PARAS or total >= EXCERPT_CHARS:
                 break
         return out

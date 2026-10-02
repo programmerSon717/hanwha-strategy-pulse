@@ -399,6 +399,20 @@ def test_iv_paywall():
               "한화생명이 애큐온캐피탈 지분 50.54%를 인수하기로 했다")), False)
     check("최소 분량 기준이 있다", telegraph.MIN_BODY_CHARS >= 200, True)
 
+    # **<br> 로 문단을 나누는 매체가 많다** (2026-10-02 회귀).
+    # 비즈니스포스트는 <p> 1개에 <br> 47개, 뉴시스는 <p> 0개였다.
+    # <p> 만 보던 때 이 매체들이 전부 "본문 부족(0자)" 로 빠졌다.
+    check("상투 문구 필터 — IE 안내",
+          bool(telegraph._BOILERPLATE.search(
+              "잠깐! 현재 Internet Explorer 8이하 버전을 이용중이십니다")), True)
+    check("상투 문구 필터 — 저작권",
+          bool(telegraph._BOILERPLATE.search("무단 전재 및 재배포 금지")), True)
+    check("일반 문장은 안 걸린다",
+          bool(telegraph._BOILERPLATE.search(
+              "한화생명이 애큐온캐피탈 지분 50.54%를 인수하기로 했다")), False)
+    check("제목 비교 정규화", telegraph._key("한화생명, 애큐온 인수!"),
+          telegraph._key("한화생명 애큐온 인수"))
+
     # 유료 도메인은 네트워크를 타지 않고 바로 거른다
     paras, why = telegraph.fetch_article("https://m.thebell.co.kr/m/newsview.asp?x=1")
     check("유료 매체는 즉시 생략", (paras, bool(why)), ([], True))
