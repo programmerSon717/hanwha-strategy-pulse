@@ -483,6 +483,13 @@ def test_isolation():
     check("크립토 봇 그룹으로 발행하지 않음",
           bool(crypto_chat) and str(settings.telegram_channel_id) == crypto_chat, False)
     check("프롬프트가 BSP", "경영전략실" in prompts_bsp.SYSTEM_PROMPT, True)
+    # 2026-10-02: key_points 가 추상적으로만 나와 구체 예시를 프롬프트에 박았다.
+    # 예시가 빠지면 다시 "포트폴리오 다변화" 류로 돌아간다.
+    P = prompts_bsp.SYSTEM_PROMPT
+    check("불릿에 구체 예시 있음", "4,400억 원에 인수" in P, True)
+    check("나쁜 예도 함께 제시", "나쁜 예" in P, True)
+    check("수치 조작 금지 명시", "지어내거나 반올림하지" in P, True)
+    check("미확인 보도 표기 지시", "공식 확인하지 않음" in P, True)
 
 
 # ══════════════════════════════════════════════════════════
