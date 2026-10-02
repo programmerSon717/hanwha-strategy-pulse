@@ -224,3 +224,23 @@ def is_crypto_tech(title: str) -> bool:
     if _CRYPTO_STRATEGIC.search(t):
         return False
     return bool(_CRYPTO_TECH.search(t))
+
+
+# ── 리스크 관점 가산 (2026-10-02 사용자 지정) ─────────────────
+# 같은 사건을 다룬 기사가 여럿이면 **리스크·우려를 짚은 쪽을 우선**한다.
+# 실제 사고: 애큐온 인수 건에서 "본계약 체결·신용등급 상향"(호재 전달)과
+# "풋옵션 자본비율 리스크 점검"(위험 분석) 둘이 함께 실렸고, 사용자는
+# 뒤쪽을 원했다. 경영전략실이 보고 싶은 것은 사실 전달보다 **판단 재료**다.
+RISK_WORDS = [
+    "리스크", "우려", "부담", "취약", "경고", "논란", "의혹", "제재", "조사",
+    "압수수색", "소송", "분쟁", "하락", "감소", "둔화", "적자", "손실", "부실",
+    "위험", "점검", "변수", "난항", "무산", "철회", "지연", "미달", "불확실",
+    "비판", "반발", "갈등", "공백", "정체", "역풍",
+]
+_RISK = re.compile("|".join(re.escape(w) for w in RISK_WORDS))
+RISK_BONUS = 10
+
+
+def risk_bonus(title: str) -> int:
+    """리스크·우려를 짚은 기사면 가산점."""
+    return RISK_BONUS if _RISK.search(title or "") else 0

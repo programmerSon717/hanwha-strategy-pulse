@@ -312,6 +312,26 @@ def test_cstop10_dedup():
     check("애큐온 2건은 같은 사건", cstop10._same(*C, *D), True)
     check("무관한 기사는 안 묶임", cstop10._same(*A, *X), False)
 
+    # **한국어 복합어 — 서로의 접두사가 아니어도 앞 3글자가 같으면 같은 낱말.**
+    # "애큐온캐피탈" 과 "애큐온저축은행" 이 안 걸려 같은 딜 기사 2건이
+    # Top10 에 나란히 실렸다(2026-10-02).
+    R1 = ("한화생명, 애큐온저축은행 인수 관련 풋옵션 자본비율 리스크 점검",
+          "한화생명,한화저축은행", "governance")
+    R2 = ("한화생명, 애큐온캐피탈 지분 50.54% 인수 의결",
+          "한화생명,애큐온캐피탈", "acquisition")
+    check("애큐온캐피탈 ↔ 애큐온저축은행", cstop10._same(*R1, *R2), True)
+    check("접두 3글자 규칙",
+          cstop10._stem_hits({"애큐온캐피탈"}, {"애큐온저축은행"}), 1)
+    check("앞글자만 같은 무관한 말은 안 걸림",
+          cstop10._stem_hits({"한화생명"}, {"삼성생명"}), 0)
+
+    # 같은 사건이면 **리스크를 짚은 쪽**을 대표로 올린다.
+    import csfit as _cf
+    check("리스크 기사에 가산",
+          _cf.risk_bonus("풋옵션 자본비율 리스크 점검") > 0, True)
+    check("호재 전달에는 가산 없음",
+          _cf.risk_bonus("인수 본계약 체결…신용등급 상향"), 0)
+
     # **한국어 조사** — "자본확충" vs "자본확충으로". 공백 토큰 비교로는 못 잡는다.
     import events
     check("조사가 붙어도 어간이 겹치면 인식",
@@ -336,6 +356,12 @@ def test_cstop10_dedup():
     # 같이 발표된 한 건의 Corporate Action 이다.
     check("한화 딜 4건이 한 건으로", len(picked), 2)
     check("무관한 건은 남음", X[0] in heads, True)
+    # 뽑힌 것들끼리도 서로 다른 사건이어야 한다
+    pairs = [(p[1], q[1]) for i, p in enumerate(picked) for q in picked[i + 1:]]
+    check("선정분끼리 중복 없음",
+          any(cstop10._same(a[1] or "", a[8] or "", a[12] or "",
+                            b[1] or "", b[8] or "", b[12] or "")
+              for a, b in pairs), False)
     check("한화 건은 가장 큰 것 하나만",
           sum(1 for h in heads if "한화" in h), 1)
 

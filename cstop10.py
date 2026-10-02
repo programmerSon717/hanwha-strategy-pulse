@@ -65,23 +65,34 @@ def window(now: float | None = None) -> tuple[float, float, str]:
     return since, until, label
 
 
-def _stem_overlap(ta: set, tb: set, minlen: int = 2) -> bool:
-    """어간이 겹치는 낱말이 있는가.
+def _stem_hits(ta: set, tb: set, minlen: int = 2, prefix: int = 3) -> int:
+    """어간이 겹치는 낱말 수.
 
-    **한국어 조사 때문에 정확히 일치하는 토큰 비교로는 안 된다.**
-    같은 딜 기사 둘이 "자본확충" 과 "자본확충으로" 로 갈려 공통 낱말이
-    0개로 나왔다(2026-10-02). 공백으로 자르면 조사가 붙은 채로 남는다.
-    한쪽이 다른 쪽의 앞부분이면 같은 낱말로 본다.
+    **한국어 복합어는 앞부분이 같아도 서로의 접두사가 아니다.**
+    "애큐온캐피탈" 과 "애큐온저축은행" 은 어느 쪽도 다른 쪽으로 시작하지 않아
+    접두사 비교로는 안 걸렸고, 같은 딜 기사 두 건이 Top10 에 나란히 실렸다
+    (2026-10-02). 앞 3글자가 같으면 같은 낱말로 본다.
+
+    조사 때문에 정확히 일치하는 비교도 안 된다 — "자본확충" vs "자본확충으로".
+    그래서 접두사 포함도 함께 본다.
     """
+    n = 0
     for x in ta:
         if len(x) < minlen:
             continue
         for y in tb:
             if len(y) < minlen:
                 continue
-            if x == y or x.startswith(y) or y.startswith(x):
-                return True
-    return False
+            if (x == y or x.startswith(y) or y.startswith(x)
+                    or (len(x) >= prefix and len(y) >= prefix
+                        and x[:prefix] == y[:prefix])):
+                n += 1
+                break
+    return n
+
+
+def _stem_overlap(ta: set, tb: set, minlen: int = 2) -> bool:
+    return _stem_hits(ta, tb, minlen) > 0
 
 
 def _same(a_title, a_ents, a_type, b_title, b_ents, b_type) -> bool:
@@ -123,11 +134,14 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type) -> bool:
     if events.similarity(a_title, b_title) >= events.SOFT_TITLE_SIMILARITY:
         score += 1
 
-    # 회사명을 뺀 낱말이 겹치는가 (인수 · 자본확충 · 유상증자 …)
+    # 회사명을 뺀 낱말이 몇 개나 겹치는가 (인수 · 자본확충 · 애큐온 …)
     ta, tb = events._tokens(a_title), events._tokens(b_title)
-    names = {events._norm(x) for x in (ea | eb)}
-    if _stem_overlap(ta - names, tb - names):
-        score += 1
+    # **교집합에 든 회사명만 뺀다.** 그건 이미 엔티티 신호로 세었다.
+    # 전부 빼면 "애큐온캐피탈" 과 "애큐온저축은행" 같은 **서로 다른** 회사명이
+    # 사라져 어간 비교 기회를 잃는다. 같은 딜의 두 기사가 그렇게 갈렸다.
+    names = {events._norm(x) for x in inter}
+    hits = _stem_hits(ta - names, tb - names)
+    score += 2 if hits >= 2 else (1 if hits else 0)
 
     return score >= 3
 
@@ -191,7 +205,9 @@ def select(rows: list, count: int | None = None, store=None,
     best: dict[str, tuple] = {}
     for r in rows:
         cid = r[K_CLUSTER] or f"_solo:{r[K_KEY]}"
-        sc = csfit.score(r[K_HEAD] or "", r[K_ENT] or "", r[K_PRI] or "", r[K_SCORE])[0]
+        sc = (csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
+                          r[K_PRI] or "", r[K_SCORE])[0]
+              + csfit.risk_bonus(r[K_HEAD] or ""))
         cur = best.get(cid)
         if cur is None or sc > cur[0]:
             best[cid] = (sc, r)
@@ -287,6 +303,12 @@ def select(rows: list, count: int | None = None, store=None,
                 continue
             if csfit.primary_category(r[K_HEAD] or "") != catg:
                 continue
+            if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                         r[K_ETYPE] if len(r) > K_ETYPE else "",
+                         q[K_HEAD] or "", q[K_ENT] or "",
+                         q[K_ETYPE] if len(q) > K_ETYPE else "")
+                   for _, q in picked):
+                continue
             picked.append((sc, r))
             reserved_keys.add(r[K_KEY])
             cat_used[catg] = cat_used.get(catg, 0) + 1
@@ -310,6 +332,15 @@ def select(rows: list, count: int | None = None, store=None,
         if used.get(head, 0) >= cap:
             deferred.append((sc, r))
             continue
+        # **최종 안전장치 — 이미 뽑은 것과 같은 사건이면 넣지 않는다.**
+        # 앞 단계에서 접었더라도 보장석·deferred 경로로 들어올 수 있다.
+        # 10건은 서로 다른 사건이어야 한다(2026-10-02 사용자 지정).
+        if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                     r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     q[K_HEAD] or "", q[K_ENT] or "",
+                     q[K_ETYPE] if len(q) > K_ETYPE else "")
+               for _, q in picked):
+            continue
         cat_used[catg] = cat_used.get(catg, 0) + 1
         used[head] = used.get(head, 0) + 1
         picked.append((sc, r))
@@ -318,6 +349,12 @@ def select(rows: list, count: int | None = None, store=None,
     for sc, r in deferred:
         if len(picked) >= count:
             break
+        if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                     r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     q[K_HEAD] or "", q[K_ENT] or "",
+                     q[K_ETYPE] if len(q) > K_ETYPE else "")
+               for _, q in picked):
+            continue
         picked.append((sc, r))
 
     # 최종 배열도 추천 순서를 따른다. 홍보성은 맨 아래.
