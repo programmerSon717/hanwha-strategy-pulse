@@ -687,6 +687,25 @@ async def main():
 
     async with httpx.AsyncClient() as client:
         # ☀️ Morning Brief (§23). 06:55 KST 에 스케줄러가 부른다.
+        if "--brief" in sys.argv and "--if-due" in sys.argv:
+            import brief as _brief
+            from datetime import datetime as _dt
+            now = _dt.now(KST)
+            hh, _, mm = settings.daily_brief_time.partition(":")
+            sched = now.replace(hour=int(hh), minute=int(mm),
+                                second=0, microsecond=0)
+            if now < sched:
+                print(f"[brief] 건너뜀 — 아직 {settings.daily_brief_time} 전")
+                return
+            last = store.last_brief_cutoff()
+            if last and _dt.fromtimestamp(last, KST).date() == now.date():
+                print("[brief] 건너뜀 — 오늘 이미 발행함")
+                return
+            print("[brief] 발행 — 발행 시각 지남 · 오늘 미발행")
+            await _brief.run(client, store,
+                             dry_run=True if dry_run else None)
+            return
+
         if "--brief" in sys.argv:
             import brief
             await brief.run(client, store,
@@ -702,6 +721,15 @@ async def main():
 
         if "--cstop10" in sys.argv:
             import cstop10
+            # --if-due: 상시 루프가 매 회차 불러도 되게, 발행 시각이 지났고
+            # 오늘 아직 안 나갔을 때만 실제로 띄운다. GitHub schedule 이
+            # 발화하지 않아 생긴 누락을 막는 장치다(2026-10-02).
+            if "--if-due" in sys.argv:
+                ok, why = cstop10.due(store)
+                if not ok:
+                    print(f"[cstop10] 건너뜀 — {why}")
+                    return
+                print(f"[cstop10] 발행 — {why}")
             await cstop10.run(client, store,
                               dry_run=True if dry_run else None)
             return

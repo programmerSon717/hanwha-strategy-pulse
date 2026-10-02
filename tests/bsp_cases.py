@@ -273,6 +273,36 @@ def test_cstop10():
           all(cstop10.visible_len(m) <= cstop10.SAFE_LIMIT for m in msgs2), True)
 
 
+def test_due_gate():
+    """--if-due 게이트 (2026-10-02 누락 사고 회귀).
+
+    GitHub schedule 이 발화하지 않아 06:55 Top10 이 통째로 빠진 날이 있었다.
+    상시 루프가 매 회차 물어보는 구조로 바꿨으므로, 그 판정이 정확해야 한다.
+    """
+    import cstop10
+    from datetime import datetime, timedelta, timezone
+    KST = timezone(timedelta(hours=9))
+    print("\n[due] 발행 시점 판정")
+
+    class S:
+        def __init__(self, ran=False): self.ran = ran
+        def agg_ran_on(self, scope, a, b): return self.ran
+
+    def at(h, m):
+        return datetime(2026, 10, 2, h, m, tzinfo=KST).timestamp()
+
+    ok, _ = cstop10.due(S(False), at(6, 30))
+    check("06:30 아직 이름", ok, False)
+    ok, _ = cstop10.due(S(False), at(6, 55))
+    check("06:55 정각이면 발행", ok, True)
+    ok, _ = cstop10.due(S(False), at(9, 0))
+    check("늦어도 그날 안이면 발행", ok, True)
+    ok, _ = cstop10.due(S(True), at(9, 0))
+    check("오늘 이미 나갔으면 안 함", ok, False)
+    ok, _ = cstop10.due(S(False), at(23, 59))
+    check("자정 직전에도 발행", ok, True)
+
+
 def test_source_weight():
     """§16 — 매체 가중치."""
     print("\n[§16] Source Quality")
@@ -471,6 +501,7 @@ def main():
     test_topic_routing()
     test_event_dedup()
     test_cstop10()
+    test_due_gate()
     test_source_weight()
     test_schema()
     test_render()

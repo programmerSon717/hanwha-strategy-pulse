@@ -176,6 +176,19 @@ jobs:
             # 폴링 1회. 실패해도 루프를 세우지 않는다 — 다음 회차가 이어받는다.
             python main.py --once || echo "  [경고] 폴링 실패 — 다음 회차로 넘어간다"
 
+            # 📌 경전실 Top10(06:55) · ☀️ Morning Brief(07:00)
+            #
+            # **GitHub 의 schedule 을 믿지 않는다.** 2026-10-02 06:55 에
+            # cstop10.yml·brief.yml 의 cron 이 아예 발화하지 않아 그날 둘 다
+            # 누락됐다(실행 이력 0건). 무료 티어의 예약 실행은 best-effort 라
+            # 하루 한 번짜리는 통째로 건너뛸 수 있다.
+            #
+            # 그래서 상시 도는 이 루프가 매 회차 물어본다. --if-due 가
+            # "시각이 지났고 오늘 아직 안 나갔는가"를 보고 아니면 즉시 빠진다.
+            # cron 워크플로는 백업으로 남겨 뒀다 — 둘 다 와도 한 번만 나간다.
+            python main.py --cstop10 --if-due || echo "  [경고] Top10 실패"
+            python main.py --brief   --if-due || echo "  [경고] Brief 실패"
+
             # 시간별 다이제스트: KST 기준 매시 첫 회차에서만.
             # 중복은 digest_log 가 막지만, 불필요한 모델 호출을 줄이려 여기서도 건다.
             MIN=$(TZ=Asia/Seoul date +%-M)

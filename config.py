@@ -77,6 +77,8 @@ class Settings:
 
     # ── Morning Brief (§23) ──
     daily_brief_time: str = os.getenv("DAILY_BRIEF_TIME", "07:00")
+    # 📌 경전실 Top10 발행 시각. Morning Brief 보다 5분 앞선다.
+    cs_top10_time: str = os.getenv("CS_TOP10_TIME", "06:55")
     daily_brief_count: int = int(os.getenv("DAILY_BRIEF_COUNT", "10"))
     # 같은 회사/같은 사건이 브리프를 독식하지 않게 하는 상한 (§24-6)
     daily_brief_max_per_entity: int = int(os.getenv("DAILY_BRIEF_MAX_PER_ENTITY", "4"))

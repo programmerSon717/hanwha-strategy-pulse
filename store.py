@@ -431,6 +431,15 @@ class Store:
             ).fetchone()
         return row[0] if row else None
 
+    def agg_ran_on(self, scope: str, day_start: float, day_end: float) -> bool:
+        """그 날 안에 해당 집계 탭이 발행한 적이 있는가."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM digest_log WHERE scope=?"
+                "   AND window_end >= ? AND window_end < ? LIMIT 1",
+                (f"msg:{scope}", day_start, day_end)).fetchone()
+        return bool(row)
+
     def record_agg_message(self, scope: str, ts: float, message_id: int | None):
         """집계 탭(🚨·☀️·📌) 발행분의 message_id 를 남긴다.
 

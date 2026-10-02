@@ -25,6 +25,32 @@ K_ETYPE, K_ORIGIN, K_TEXT = 12, 13, 14   # origin_at=기사 발행시각, text=�
 PR_INTERVAL_SEC = 2 * 24 * 3600
 
 
+def due(store, now: float | None = None) -> tuple[bool, str]:
+    """지금 발행해야 하는가. (해야하나, 이유)
+
+    **GitHub 의 schedule 에 기대지 않기 위해 있다.** 2026-10-02 06:55 에
+    cstop10.yml 의 cron(21:55 UTC)이 아예 발화하지 않아 그날 Top10 이 누락됐다.
+    실행 이력 0건. 리포 문서에도 적혀 있듯 GitHub 무료 티어의 예약 실행은
+    best-effort 다(간격 중앙값 42분, 최대 11시간). 하루 한 번짜리는 통째로
+    건너뛸 수 있다.
+
+    그래서 **상시 도는 bot.yml 루프**가 매 회차 이것을 물어보고 띄운다.
+    cron 워크플로는 백업으로 남겨 둔다 — 둘 다 와도 여기서 한 번만 나간다.
+    """
+    now = now or datetime.now(KST).timestamp()
+    t = datetime.fromtimestamp(now, KST)
+    hh, _, mm = settings.cs_top10_time.partition(":")
+    sched = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    day0 = t.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    day1 = day0 + 24 * 3600
+
+    if t < sched:
+        return False, f"아직 {settings.cs_top10_time} 전"
+    if store.agg_ran_on("cs_top10", day0, day1):
+        return False, "오늘 이미 발행함"
+    return True, "발행 시각 지남 · 오늘 미발행"
+
+
 def window(now: float | None = None) -> tuple[float, float, str]:
     """전날 06:55 ~ 오늘 06:55."""
     now = now or datetime.now(KST).timestamp()
