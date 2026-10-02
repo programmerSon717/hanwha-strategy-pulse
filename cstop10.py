@@ -220,7 +220,7 @@ def select(rows: list, count: int | None = None, store=None,
 
 
 TG_LIMIT = 4096          # 텔레그램 한 메시지 상한. **보이는 텍스트** 기준이다
-SAFE_LIMIT = 4000        # 여유분 96자
+SAFE_LIMIT = 4060        # 여유분 36자. visible_len 이 정확해 더 줄일 이유가 없다
 
 # 기사와 기사 사이. 섹션 사이가 한 줄이라 기사 경계는 더 벌려야 구분된다.
 ITEM_GAP = "\n\n━━━━━\n\n"
@@ -311,12 +311,20 @@ def render_item(r, *, lede=120, bullets=3, blen=58, why=130) -> str:
 
 
 # 한 판에 안 들어갈 때 차례로 조여 보는 단계. 위에서부터 시도한다.
+#
+# **순서가 중요하다. 문장을 중간에 자르기 전에 불릿 개수부터 줄인다.**
+# 불릿 하나가 빠지는 건 읽는 사람이 눈치채지 못하지만, 문장이 "…" 로 끊기면
+# 바로 보이고 뜻도 잘린다. 사용자 지적(2026-10-02): 펭귄 코멘트가 중간에 잘렸다.
+# lede·why 길이를 건드리는 건 불릿을 다 뺀 뒤의 최후 수단이다.
 TIGHTEN = [
-    dict(lede=120, bullets=3, blen=58, why=130),
-    dict(lede=100, bullets=3, blen=50, why=110),
-    dict(lede=90,  bullets=2, blen=48, why=95),
-    dict(lede=80,  bullets=2, blen=42, why=80),
-    dict(lede=70,  bullets=0, blen=0,  why=70),
+    dict(lede=400, bullets=4, blen=200, why=400),   # 자르지 않음
+    dict(lede=400, bullets=3, blen=200, why=400),   # 불릿만 줄인다
+    dict(lede=400, bullets=2, blen=200, why=400),
+    dict(lede=400, bullets=1, blen=200, why=400),
+    dict(lede=400, bullets=0, blen=0,   why=400),   # 불릿 전부 뺌
+    dict(lede=200, bullets=0, blen=0,   why=220),   # 여기서부터 문장을 줄인다
+    dict(lede=150, bullets=0, blen=0,   why=170),
+    dict(lede=100, bullets=0, blen=0,   why=110),
 ]
 
 

@@ -262,6 +262,17 @@ def test_cstop10():
     many = [(90, row(f"k{i}", f"제목{i}", "한화생명", 90, orig)) for i in range(10)]
     msgs = cstop10.render_all(many, "2026.10.01 Thu")
     check("한 메시지로", len(msgs), 1)
+    # **자리가 남으면 문장을 자르지 않는다** (2026-10-02 사용자 지적).
+    # 줄이는 순서는 불릿 개수 → 그 다음이 문장 길이다.
+    import re as _re, html as _html
+    plain = _re.sub(r"<[^>]+>", "", _html.unescape(msgs[0]))
+    cut_lines = [l for l in plain.split("\n")
+                 if l.startswith(("✅", "🐧")) and l.rstrip().endswith("…")]
+    check("잘린 ✅·🐧 줄 없음", len(cut_lines), 0)
+    check("첫 단계는 무제한", cstop10.TIGHTEN[0]["why"] >= 400, True)
+    check("불릿부터 줄인다",
+          cstop10.TIGHTEN[1]["bullets"] < cstop10.TIGHTEN[0]["bullets"]
+          and cstop10.TIGHTEN[1]["why"] == cstop10.TIGHTEN[0]["why"], True)
     check("기사 사이 구분선", cstop10.ITEM_GAP.strip() in msgs[0], True)
     check("상한 이내", cstop10.visible_len(msgs[0]) <= cstop10.SAFE_LIMIT, True)
 
