@@ -377,6 +377,38 @@ def test_cstop10_criteria():
           any("덴쿤" in h for h in heads), False)
 
 
+def test_iv_paywall():
+    """IV 페이지는 본문을 제대로 가져왔을 때만 만든다 (2026-10-02 회귀).
+
+    더벨 유료기사에서 "이 콘텐츠는 자본시장 미디어 더벨 유료회원 전용입니다"
+    라는 안내문을 본문이라고 페이지에 실었다. 뉴데일리 AMP 는 0자였는데도
+    요약만 담긴 빈 페이지를 만들었다. 둘 다 안 만드는 게 맞다.
+    """
+    import telegraph
+    print("\n[IV] 페이월·추출실패 판정")
+
+    check("더벨은 유료 매체 목록에",
+          any("thebell" in d for d in telegraph.PAYWALL_DOMAINS), True)
+    check("인베스트조선도",
+          any("investchosun" in d for d in telegraph.PAYWALL_DOMAINS), True)
+    check("페이월 문구 인식",
+          bool(telegraph.PAYWALL_MARKERS.search(
+              "이 콘텐츠는 자본시장 미디어 더벨 유료회원 전용입니다")), True)
+    check("일반 본문은 페이월 아님",
+          bool(telegraph.PAYWALL_MARKERS.search(
+              "한화생명이 애큐온캐피탈 지분 50.54%를 인수하기로 했다")), False)
+    check("최소 분량 기준이 있다", telegraph.MIN_BODY_CHARS >= 200, True)
+
+    # 유료 도메인은 네트워크를 타지 않고 바로 거른다
+    paras, why = telegraph.fetch_article("https://m.thebell.co.kr/m/newsview.asp?x=1")
+    check("유료 매체는 즉시 생략", (paras, bool(why)), ([], True))
+
+    # 본문이 없으면 페이지 내용도 만들지 않는다
+    c = telegraph.build_content("요약", ["불릿"], "왜", [], "http://x", "매체")
+    text = str(c)
+    check("본문 없으면 문단 없음", "요약" in text, False)
+
+
 def test_due_gate():
     """--if-due 게이트 (2026-10-02 누락 사고 회귀).
 
@@ -614,6 +646,7 @@ def main():
     test_cstop10()
     test_cstop10_dedup()
     test_cstop10_criteria()
+    test_iv_paywall()
     test_due_gate()
     test_source_weight()
     test_schema()

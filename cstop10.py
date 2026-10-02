@@ -390,11 +390,19 @@ def _iv_url(r, real_url: str, store) -> str | None:
         mm = re.match(r"^.+?\((.+)\)$", nm)
         src_name = (mm.group(1) if mm else nm).strip()
 
+    # **본문을 제대로 못 가져오면 IV 페이지를 만들지 않는다.**
+    # 페이월 안내문("유료회원 전용입니다")을 본문이라고 실었다가 지적받았다.
+    # 이럴 땐 제목이 원래 기사로 바로 가는 게 낫다 — 빈 페이지를 거치게 하지 않는다.
+    paras, why_fail = telegraph.fetch_article(real_url)
+    if why_fail:
+        print(f"[cstop10] IV 생략({why_fail}): {(r[K_HEAD] or '')[:36]}")
+        return None
+
     content = telegraph.build_content(
         summary=(r[K_LEDE] or "").strip(),
         bullets=bullets,
         why=(r[K_WHY] or "").strip(),
-        excerpt=telegraph.fetch_excerpt(real_url),
+        excerpt=paras,
         source_url=real_url,
         source_name=src_name,
     )
