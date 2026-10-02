@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import brief
 import csfit
 import events
+import gnews
 import topics
 from config import settings
 
@@ -383,7 +384,7 @@ def _link_headline(body: str, url: str) -> str:
     return "\n".join(lines)
 
 
-def render_item(r, **_ignored) -> str:
+def render_item(r, url: str | None = None, **_ignored) -> str:
     """기사 1건. **발행 당시 원문을 그대로 쓴다.**
 
     원문(published.text)에는 ✅ 핵심 · 📂 주요 내용(불릿) · 🐧 · 🕒 · 기사 원문 ·
@@ -413,7 +414,13 @@ def render_item(r, **_ignored) -> str:
         body = "\n".join(lines)
         # 옛 메시지에 남은 영문 라벨만 펭귄으로 맞춘다.
         body = body.replace("💡 <b>Why it matters</b>\n", "🐧 ")
-        body = _link_headline(body, r[K_URL] or "")
+        # 본문 안의 구글뉴스 주소를 전부 실제 기사 주소로 바꾼다.
+        # 제목뿐 아니라 맨 아래 "기사 원문" 도 바로 가야 한다.
+        src = r[K_URL] or ""
+        if url and src and url != src:
+            body = body.replace(html.escape(src, quote=True), html.escape(url, quote=True))
+            body = body.replace(src, url)
+        body = _link_headline(body, url or src)
         return head + "\n\n" + body
 
     # 원문이 없는 옛 행은 가진 필드로 최소 형태를 만든다. 여기서만 escape 한다.
@@ -428,7 +435,17 @@ def render_item(r, **_ignored) -> str:
     return "\n".join(parts)
 
 
-def render_all(picked: list, label: str) -> list[str]:
+def _first_urls(msgs: list[str], items: list[str], urls: list[str]) -> list[str]:
+    """조각마다 **맨 앞 기사**의 주소. 미리보기는 메시지당 하나뿐이라 대표를 고른다."""
+    out, idx = [], 0
+    for m in msgs:
+        taken = sum(1 for it in items if it in m)
+        out.append(urls[idx] if idx < len(urls) else "")
+        idx += max(taken, 1)
+    return out
+
+
+def render_all(picked: list, label: str, _store=None) -> tuple[list[str], list[str]]:
     """메시지 목록. **내용을 깎지 않는다 — 넘치면 나눈다.**
 
     한 판으로 보내려고 불릿을 줄이고 문장을 자르던 것을 그만뒀다. 기사 하나가
@@ -441,7 +458,10 @@ def render_all(picked: list, label: str) -> list[str]:
     if n_pr:
         head += f"  ·  홍보 {n_pr}건 포함"
 
-    items = [render_item(r) for _, r in picked]
+    # 구글뉴스 리디렉터를 실제 기사 주소로 바꾼다. 발행 링크의 86% 가 그것이다.
+    # 미리보기 카드가 붙으려면 메타태그가 있는 실제 기사 주소여야 한다.
+    urls = [gnews.resolve(r[K_URL] or "", _store) for _, r in picked]
+    items = [render_item(r, url=u) for (_, r), u in zip(picked, urls)]
 
     # 몇 조각이 필요한지 먼저 센 뒤, 그 수에 맞춰 **고르게** 나눈다.
     # 그냥 채우면 3,999자 + 731자 처럼 한쪽으로 쏠려 보기 나쁘다.
@@ -460,14 +480,14 @@ def render_all(picked: list, label: str) -> list[str]:
     base = pack(SAFE_LIMIT)
     n = len(base)
     if n == 1:
-        return base
+        return base, urls[:1]
     # 조각 수를 늘리지 않는 선에서 한도를 조여 균등하게 만든다.
     total = visible_len(head) + sum(visible_len(i) + len(ITEM_GAP) for i in items)
     for limit in range(total // n + 60, SAFE_LIMIT + 1, 40):
         trial = pack(limit)
         if trial and len(trial) == n:
-            return trial
-    return base
+            return trial, _first_urls(trial, items, urls)
+    return base, _first_urls(base, items, urls)
 
 
 async def run(client, store, dry_run: bool | None = None) -> int | None:
@@ -484,7 +504,7 @@ async def run(client, store, dry_run: bool | None = None) -> int | None:
         print("[cstop10] 후보 없음 — 게시하지 않음")
         return None
 
-    msgs = render_all(picked, label)
+    msgs, preview_urls = render_all(picked, label, store)
     print(f"[cstop10] 메시지 {len(msgs)}건 "
           f"(보이는 길이 {[visible_len(m) for m in msgs]})")
 
@@ -499,7 +519,9 @@ async def run(client, store, dry_run: bool | None = None) -> int | None:
     thread = topics.thread_id_for("cs_top10")
     first = None
     for i, m in enumerate(msgs):
-        mid = await publisher.send_raw(client, m, thread)
+        mid = await publisher.send_raw(
+            client, m, thread,
+            preview_url=preview_urls[i] if i < len(preview_urls) else None)
         # 발행분을 기록해 둔다 — 나중에 이 메시지만 골라 지울 수 있게.
         store.record_agg_message("cs_top10", until + i, mid)
         first = first or mid

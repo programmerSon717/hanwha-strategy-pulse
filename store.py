@@ -482,6 +482,22 @@ class Store:
                 (f"msg:{scope}", day_start, day_end)).fetchone()
         return bool(row)
 
+    def get_resolved_url(self, src: str) -> str | None:
+        with self._conn() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS resolved_url ("
+                      "  src TEXT PRIMARY KEY, dst TEXT, ts REAL)")
+            row = c.execute("SELECT dst FROM resolved_url WHERE src=?",
+                            (src,)).fetchone()
+        return row[0] if row else None
+
+    def put_resolved_url(self, src: str, dst: str):
+        import time
+        with self._conn() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS resolved_url ("
+                      "  src TEXT PRIMARY KEY, dst TEXT, ts REAL)")
+            c.execute("INSERT OR REPLACE INTO resolved_url (src, dst, ts)"
+                      " VALUES (?,?,?)", (src, dst, time.time()))
+
     def record_agg_message(self, scope: str, ts: float, message_id: int | None):
         """집계 탭(🚨·☀️·📌) 발행분의 message_id 를 남긴다.
 

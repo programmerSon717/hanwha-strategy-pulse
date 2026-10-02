@@ -260,8 +260,9 @@ def test_cstop10():
 
     # 길이가 넘치면 **내용을 깎지 말고 메시지를 나눈다**
     many = [(90, row(f"k{i}", f"제목{i}", "한화생명", 90, orig)) for i in range(10)]
-    msgs = cstop10.render_all(many, "2026.10.02 Fri")
+    msgs, previews = cstop10.render_all(many, "2026.10.02 Fri")
     check("불릿을 깎지 않는다", all(m.count("• 불릿") % 5 == 0 for m in msgs), True)
+    check("조각마다 미리보기 주소 1개", len(previews), len(msgs))
     check("조각마다 상한 이내",
           all(cstop10.visible_len(m) <= cstop10.SAFE_LIMIT for m in msgs), True)
     # 고르게 나뉘어야 한다 — 3,999 + 731 처럼 쏠리면 안 된다

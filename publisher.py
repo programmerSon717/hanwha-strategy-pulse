@@ -254,13 +254,21 @@ def _source_line(data: dict, url: str) -> str:
 
 
 async def send_raw(client: httpx.AsyncClient, text: str, thread_id: int | None,
-                   reply_to: int | None = None) -> int | None:
-    """이미 만들어진 본문을 그대로 발행한다(탭 이동·재정렬용)."""
+                   reply_to: int | None = None,
+                   preview_url: str | None = None) -> int | None:
+    """이미 만들어진 본문을 그대로 발행한다(탭 이동·재정렬용).
+
+    preview_url 을 주면 그 주소로 미리보기 카드를 붙인다.
+    **텔레그램은 메시지당 미리보기 1개만 허용한다.** 여러 기사를 묶은 글이면
+    대표 1건만 카드가 뜬다(2026-10-02).
+    """
+    lp = ({"is_disabled": False, "url": preview_url, "show_above_text": False}
+          if preview_url else {"is_disabled": True})
     payload = {
         "chat_id": settings.telegram_channel_id,
         "text": text,
         "parse_mode": "HTML",
-        "link_preview_options": {"is_disabled": True},
+        "link_preview_options": lp,
     }
     if thread_id:
         payload["message_thread_id"] = thread_id
