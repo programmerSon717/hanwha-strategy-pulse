@@ -199,6 +199,7 @@ def test_cstop10():
     class S:
         def __init__(self, last): self._l = last
         def last_pr_pick(self): return self._l
+        def cstop10_recent_clusters(self, since): return []
 
     picked = cstop10.select(rows, count=10, store=S(None), now=now)
     npr = sum(1 for _, r in picked if csfit.is_pr(r[1]))
@@ -271,6 +272,57 @@ def test_cstop10():
     check("넘치면 분할", len(msgs2) > 1, True)
     check("분할 조각도 상한 이내",
           all(cstop10.visible_len(m) <= cstop10.SAFE_LIMIT for m in msgs2), True)
+
+
+def test_cstop10_dedup():
+    """같은 사건 접기 + 기게재 제외 (2026-10-02 사용자 피드백 회귀).
+
+    Top10 에 애큐온캐피탈 인수가 3건, 한화투자증권 자본확충이 2건 실렸다.
+    저장된 cluster_id 가 5가지로 갈려 있어 1차 묶기로는 못 잡았다.
+    """
+    import cstop10, time
+    print("\n[Top10] 같은 사건 접기")
+
+    # 실제 사고 데이터 그대로
+    A = ("한화투자증권 자본확충 및 캐피탈·저축은행 인수 추진, 한화 금융계열사 포트폴리오 다각화",
+         "한화투자증권,한화생명,한화그룹,김동원", "acquisition")
+    B = ("한화투자증권, 9천억 원 자본확충으로 종투사 도약 및 디지털자산 사업 탄력",
+         "한화투자증권", "investment")
+    C = ("한화생명, 애큐온캐피탈 인수 확정", "한화생명", "acquisition")
+    D = ("한화생명, 애큐온캐피탈 지분 50.54% 인수 의결",
+         "한화생명,애큐온캐피탈", "acquisition")
+    X = ("교보생명그룹, 디지털자산 접목 시도", "교보생명", "product")
+
+    check("자본확충 2건은 같은 사건", cstop10._same(*A, *B), True)
+    check("애큐온 2건은 같은 사건", cstop10._same(*C, *D), True)
+    check("무관한 기사는 안 묶임", cstop10._same(*A, *X), False)
+
+    # **한국어 조사** — "자본확충" vs "자본확충으로". 공백 토큰 비교로는 못 잡는다.
+    import events
+    check("조사가 붙어도 어간이 겹치면 인식",
+          cstop10._stem_overlap({"자본확충"}, {"자본확충으로"}), True)
+    check("짧은 조각은 무시", cstop10._stem_overlap({"가"}, {"가나다"}), False)
+    check("무관한 낱말은 안 겹침",
+          cstop10._stem_overlap({"자본확충"}, {"지배구조"}), False)
+
+    # select() 가 실제로 접는가
+    def row(k, head, ent, sc, et, cid):
+        return (k, head, "http://x", "hanwha_group", "", sc, 0, cid, ent,
+                "요약", "왜", time.time(), et, time.time(), "")
+    rows = [row("a", A[0], A[1], 90, A[2], "cid1"),
+            row("b", B[0], B[1], 88, B[2], "cid2"),
+            row("c", C[0], C[1], 95, C[2], "cid3"),
+            row("d", D[0], D[1], 92, D[2], "cid4"),
+            row("x", X[0], X[1], 70, X[2], "cid5")]
+    picked = cstop10.select(rows, count=10, store=None)
+    heads = [r[1] for _, r in picked]
+    # A 의 제목이 "자본확충 **및** 캐피탈·저축은행 인수" 로 두 딜을 다 담고 있어
+    # 애큐온 건과도 이어진다. 네 건이 한 묶음이 되는 게 맞다 — 실제로 같은 날
+    # 같이 발표된 한 건의 Corporate Action 이다.
+    check("한화 딜 4건이 한 건으로", len(picked), 2)
+    check("무관한 건은 남음", X[0] in heads, True)
+    check("한화 건은 가장 큰 것 하나만",
+          sum(1 for h in heads if "한화" in h), 1)
 
 
 def test_due_gate():
@@ -501,6 +553,7 @@ def main():
     test_topic_routing()
     test_event_dedup()
     test_cstop10()
+    test_cstop10_dedup()
     test_due_gate()
     test_source_weight()
     test_schema()

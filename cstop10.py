@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import csfit
+import events
 import topics
 from config import settings
 
@@ -60,31 +61,132 @@ def window(now: float | None = None) -> tuple[float, float, str]:
     return since, until, label
 
 
+def _stem_overlap(ta: set, tb: set, minlen: int = 2) -> bool:
+    """어간이 겹치는 낱말이 있는가.
+
+    **한국어 조사 때문에 정확히 일치하는 토큰 비교로는 안 된다.**
+    같은 딜 기사 둘이 "자본확충" 과 "자본확충으로" 로 갈려 공통 낱말이
+    0개로 나왔다(2026-10-02). 공백으로 자르면 조사가 붙은 채로 남는다.
+    한쪽이 다른 쪽의 앞부분이면 같은 낱말로 본다.
+    """
+    for x in ta:
+        if len(x) < minlen:
+            continue
+        for y in tb:
+            if len(y) < minlen:
+                continue
+            if x == y or x.startswith(y) or y.startswith(x):
+                return True
+    return False
+
+
+def _same(a_title, a_ents, a_type, b_title, b_ents, b_type) -> bool:
+    """두 기사가 같은 사건인가. **신호를 합산해서** 판정한다.
+
+    저장된 cluster_id 를 믿으면 안 된다 — 모델이 main_entities 를 기사마다
+    다르게 적어 fingerprint 가 갈린다. 애큐온캐피탈 인수 한 건이 실제로
+    5가지 cluster_id 로 저장돼 Top10 에 3건이 나란히 실렸다(2026-10-02).
+
+    제목 유사도 단독으로도 안 된다. 같은 딜을 다룬 기사들의 Jaccard 가
+    0.13~0.14 로 나와 events.SOFT_TITLE_SIMILARITY(0.25)에도 못 미쳤다.
+    매체마다 제목을 전혀 다르게 뽑기 때문이다.
+
+    그래서 네 신호를 합산한다. 엔티티가 하나도 안 겹치면 무조건 다른 사건이다.
+        엔티티 2개 이상 겹침  +2      엔티티 1개 겹침       +1
+        action 그룹 같음      +1      제목 유사도 0.25 이상 +1
+        회사명 말고 겹치는 낱말이 있음  +1
+    합이 3 이상이면 같은 사건으로 본다.
+
+    틀렸을 때의 대가가 비대칭이라 이 정도로 과감하게 잡는다 — 잘못 묶으면
+    Top10 에서 기사 하나가 빠질 뿐이고, 못 묶으면 같은 뉴스가 3~4건 실린다.
+    """
+    def ents_of(ents, title):
+        return events._entity_set(
+            {"main_entities": [e for e in (ents or "").split(",") if e]}, title)
+
+    ea, eb = ents_of(a_ents, a_title), ents_of(b_ents, b_title)
+    inter = ea & eb
+    if not inter:
+        return False
+
+    score = 2 if len(inter) >= 2 else 1
+
+    ga = events.ACTION_GROUPS.get(a_type or "other", "other")
+    gb = events.ACTION_GROUPS.get(b_type or "other", "other")
+    if ga == gb:
+        score += 1
+
+    if events.similarity(a_title, b_title) >= events.SOFT_TITLE_SIMILARITY:
+        score += 1
+
+    # 회사명을 뺀 낱말이 겹치는가 (인수 · 자본확충 · 유상증자 …)
+    ta, tb = events._tokens(a_title), events._tokens(b_title)
+    names = {events._norm(x) for x in (ea | eb)}
+    if _stem_overlap(ta - names, tb - names):
+        score += 1
+
+    return score >= 3
+
+
 def select(rows: list, count: int | None = None, store=None,
            now: float | None = None) -> list:
-    """적합도 순 Top N. 같은 Event 는 대표기사 하나만.
+    """적합도 순 Top N.
 
-    홍보성 기사(csfit.is_pr)는 **이틀에 한 건, 가장 큰 것 하나만** 넣는다.
-    경전실도 홍보성을 공유하지만 11일 125건 중 3건 수준이다. 그대로 두면
-    한화 가중치(40)가 커서 홍보성이 매일 상위를 먹는다.
+    같은 사건은 **한 건만** 싣는다. 저장된 cluster_id 로 1차로 묶고,
+    그것만으로는 갈리는 건들을 _same() 으로 2차로 묶는다.
+
+    홍보성 기사는 이틀에 한 건, 가장 큰 것 하나만 넣는다.
     """
     import time
     count = count or settings.daily_brief_count
     now = now or time.time()
 
+    # 1차: 저장된 cluster_id
     best: dict[str, tuple] = {}
     for r in rows:
         cid = r[K_CLUSTER] or f"_solo:{r[K_KEY]}"
-        s = csfit.score(r[K_HEAD] or "", r[K_ENT] or "", r[K_PRI] or "", r[K_SCORE])[0]
+        sc = csfit.score(r[K_HEAD] or "", r[K_ENT] or "", r[K_PRI] or "", r[K_SCORE])[0]
         cur = best.get(cid)
-        if cur is None or s > cur[0]:
-            best[cid] = (s, r)
+        if cur is None or sc > cur[0]:
+            best[cid] = (sc, r)
 
-    ranked = sorted(best.values(), key=lambda x: -x[0])
+    # 2차: 실제 값으로 같은 사건 재판정. 점수 높은 쪽을 남긴다.
+    merged: list = []
+    for sc, r in sorted(best.values(), key=lambda x: -x[0]):
+        dup = False
+        for i, (sc2, r2) in enumerate(merged):
+            if _same(r[K_HEAD] or "", r[K_ENT] or "", r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     r2[K_HEAD] or "", r2[K_ENT] or "",
+                     r2[K_ETYPE] if len(r2) > K_ETYPE else ""):
+                dup = True
+                break
+        if not dup:
+            merged.append((sc, r))
 
-    # 홍보성과 일반을 가른다.
-    pr = [(s, r) for s, r in ranked if csfit.is_pr(r[K_HEAD] or "")]
-    normal = [(s, r) for s, r in ranked if not csfit.is_pr(r[K_HEAD] or "")]
+    dropped = len(best) - len(merged)
+    if dropped:
+        print(f"[cstop10] 같은 사건 {dropped}건 접음")
+
+    # 3차: 최근 Top10 에 이미 실린 사건 제외
+    if store is not None:
+        recent = store.cstop10_recent_clusters(now - 7 * 24 * 3600)
+        if recent:
+            keep = []
+            for sc, r in merged:
+                hit = any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                                r[K_ETYPE] if len(r) > K_ETYPE else "",
+                                h or "", e or "", t or "")
+                          for h, e, t in recent)
+                if hit:
+                    print(f"[cstop10] 기게재 사건 제외: {(r[K_HEAD] or '')[:40]}")
+                else:
+                    keep.append((sc, r))
+            merged = keep
+
+    ranked = merged
+
+    pr = [(sc, r) for sc, r in ranked if csfit.is_pr(r[K_HEAD] or "")]
+    normal = [(sc, r) for sc, r in ranked if not csfit.is_pr(r[K_HEAD] or "")]
 
     allow_pr = True
     if store is not None:
@@ -98,33 +200,23 @@ def select(rows: list, count: int | None = None, store=None,
     cap = settings.daily_brief_max_per_entity
     used: dict[str, int] = {}
     picked, deferred = [], []
-    for s, r in pr_pick + normal:
+    for sc, r in pr_pick + normal:
         ents = [e for e in (r[K_ENT] or "").split(",") if e]
         head = ents[0] if ents else (r[K_PRI] or "_")
         if used.get(head, 0) >= cap:
-            deferred.append((s, r))
+            deferred.append((sc, r))
             continue
         used[head] = used.get(head, 0) + 1
-        picked.append((s, r))
+        picked.append((sc, r))
         if len(picked) >= count:
             break
-    for s, r in deferred:
+    for sc, r in deferred:
         if len(picked) >= count:
             break
-        picked.append((s, r))
+        picked.append((sc, r))
 
-    # 홍보성은 맨 아래로 — 상단은 전략 사안이 차지해야 한다.
     picked.sort(key=lambda x: (csfit.is_pr(x[1][K_HEAD] or ""), -x[0]))
     return picked
-
-
-def _ts(v) -> float | None:
-    """epoch 로 쓸 수 있는 값이면 float, 아니면 None. DB 에 TEXT 로 들어온 행이 있다."""
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return None
-    return f if f > 0 else None
 
 
 TG_LIMIT = 4096          # 텔레그램 한 메시지 상한. **보이는 텍스트** 기준이다
@@ -162,6 +254,15 @@ def _sections(text: str) -> dict:
         mm = re.match(r"^.+?\((.+)\)$", src)
         out["source"] = (mm.group(1) if mm else src).strip()
     return out
+
+
+def _ts(v) -> float | None:
+    """epoch 로 쓸 수 있는 값이면 float, 아니면 None. DB 에 TEXT 로 들어온 행이 있다."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
 
 
 def _cut(s: str, n: int) -> str:
@@ -254,7 +355,7 @@ async def run(client, store, dry_run: bool | None = None) -> int | None:
     import publisher
     dry = settings.dry_run if dry_run is None else dry_run
     since, until, label = window()
-    rows = store.brief_candidates(since, until, settings.discard_threshold)
+    rows = store.cstop10_candidates(since, until, settings.discard_threshold)
     picked = select(rows, store=store)
     span = (f"{datetime.fromtimestamp(since, KST):%m-%d %H:%M}"
             f" ~ {datetime.fromtimestamp(until, KST):%m-%d %H:%M}")
@@ -284,6 +385,9 @@ async def run(client, store, dry_run: bool | None = None) -> int | None:
         first = first or mid
         if i < len(msgs) - 1:
             await asyncio.sleep(0.6)
+    # 실린 기사를 표시해 둔다 — 다음 회차에서 다시 뽑히지 않게.
+    store.mark_cstop10([r[K_KEY] for _, r in picked],
+                       datetime.fromtimestamp(until, KST).strftime("%Y-%m-%d"))
     if any(csfit.is_pr(r[K_HEAD] or "") for _, r in picked):
         store.record_pr_pick(until, first)
         print("[cstop10] 홍보성 1건 게재 — 이틀간 보류")

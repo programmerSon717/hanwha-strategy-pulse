@@ -102,6 +102,7 @@ class Store:
                 ("main_entities", "TEXT"),      # 쉼표 구분(정식명)
                 ("content_hash", "TEXT"),
                 ("daily_brief_date", "TEXT"),   # 브리프에 실린 날짜(YYYY-MM-DD)
+                ("cs_top10_date", "TEXT"),      # 📌 경전실 Top10 에 실린 날짜
                 ("why_it_matters", "TEXT"),
                 ("confidence", "REAL"),
             ):
@@ -111,6 +112,7 @@ class Store:
                 ("idx_pub_score", "published(strategic_score)"),
                 ("idx_pub_cluster", "published(event_cluster_id)"),
                 ("idx_pub_brief", "published(daily_brief_date)"),
+                ("idx_pub_top10", "published(cs_top10_date)"),
             ):
                 c.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {expr}")
 
@@ -416,6 +418,46 @@ class Store:
                 " ORDER BY strategic_score DESC, sent_at DESC",
                 (min_score, since_ts, until_ts),
             ).fetchall()
+
+    def cstop10_candidates(self, since_ts: float, until_ts: float,
+                           min_score: int) -> list:
+        """📌 경전실 Top10 후보.
+
+        brief_candidates 와 다른 점: **이미 Top10 에 실린 기사를 뺀다.**
+        Morning Brief 의 daily_brief_date 와는 별개 컬럼이다 — 두 탭은 선정
+        기준이 달라 한쪽에 실렸다고 다른 쪽에서 빼면 안 된다.
+        """
+        with self._conn() as c:
+            return c.execute(
+                "SELECT key, headline, source_url, primary_topic, secondary_topics,"
+                "       strategic_score, is_key_issue, event_cluster_id, main_entities,"
+                "       lede, why_it_matters, sent_at, event_type, origin_at, text"
+                "  FROM published"
+                " WHERE strategic_score IS NOT NULL"
+                "   AND strategic_score >= ?"
+                "   AND sent_at > ? AND sent_at <= ?"
+                "   AND (cs_top10_date IS NULL OR cs_top10_date='')"
+                " ORDER BY strategic_score DESC, sent_at DESC",
+                (min_score, since_ts, until_ts),
+            ).fetchall()
+
+    def mark_cstop10(self, keys: list, date_str: str):
+        with self._conn() as c:
+            c.executemany("UPDATE published SET cs_top10_date=? WHERE key=?",
+                          [(date_str, k) for k in keys])
+
+    def cstop10_recent_clusters(self, since_ts: float) -> list:
+        """최근 Top10 에 실린 기사들의 (제목, 엔티티, event_type).
+
+        저장된 cluster_id 로는 같은 사건을 못 묶는다 — 모델이 main_entities 를
+        기사마다 다르게 적어 fingerprint 가 갈린다(애큐온캐피탈 건은 5가지로
+        갈렸다). 그래서 실제 값으로 다시 비교한다.
+        """
+        with self._conn() as c:
+            return c.execute(
+                "SELECT headline, main_entities, event_type FROM published"
+                " WHERE cs_top10_date IS NOT NULL AND cs_top10_date<>''"
+                "   AND sent_at > ?", (since_ts,)).fetchall()
 
     def mark_briefed(self, keys: list, date_str: str):
         with self._conn() as c:
