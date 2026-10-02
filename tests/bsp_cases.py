@@ -170,6 +170,11 @@ def test_cstop10():
     # 가짜 제목이 '기공유'로 걸려 결과가 달라진다. 비워 두고 본다.
     import shared as _sh
     _sh._cache = []
+    # 합성 URL(http://x)은 실제로 받아올 수 없다. 전문 확보 검사를 우회해
+    # 선정 로직만 본다. 유료기사 대체 자체는 test_iv_paywall 에서 검사한다.
+    import cstop10 as _cs
+    _cs._ORIG_FETCHABLE = getattr(_cs, "_ORIG_FETCHABLE", _cs._fetchable)
+    _cs._fetchable = lambda group, store: max(group, key=lambda x: x[0])
     """📌 경전실 Top10 — 적합도·홍보성 판정 (2026-10-01)."""
     import csfit, cstop10, time
     print("\n[Top10] 경전실 적합도")
@@ -290,6 +295,11 @@ def test_cstop10_dedup():
     # 가짜 제목이 '기공유'로 걸려 결과가 달라진다. 비워 두고 본다.
     import shared as _sh
     _sh._cache = []
+    # 합성 URL(http://x)은 실제로 받아올 수 없다. 전문 확보 검사를 우회해
+    # 선정 로직만 본다. 유료기사 대체 자체는 test_iv_paywall 에서 검사한다.
+    import cstop10 as _cs
+    _cs._ORIG_FETCHABLE = getattr(_cs, "_ORIG_FETCHABLE", _cs._fetchable)
+    _cs._fetchable = lambda group, store: max(group, key=lambda x: x[0])
     """같은 사건 접기 + 기게재 제외 (2026-10-02 사용자 피드백 회귀).
 
     Top10 에 애큐온캐피탈 인수가 3건, 한화투자증권 자본확충이 2건 실렸다.
@@ -371,6 +381,11 @@ def test_cstop10_criteria():
     # 가짜 제목이 '기공유'로 걸려 결과가 달라진다. 비워 두고 본다.
     import shared as _sh
     _sh._cache = []
+    # 합성 URL(http://x)은 실제로 받아올 수 없다. 전문 확보 검사를 우회해
+    # 선정 로직만 본다. 유료기사 대체 자체는 test_iv_paywall 에서 검사한다.
+    import cstop10 as _cs
+    _cs._ORIG_FETCHABLE = getattr(_cs, "_ORIG_FETCHABLE", _cs._fetchable)
+    _cs._fetchable = lambda group, store: max(group, key=lambda x: x[0])
     """추천 서칭 순서 + 125건 가중치 + 크립토 선별 (2026-10-02 사용자 지정)."""
     import cstop10, csfit, time
     print("\n[Top10] 선정 기준")
@@ -422,7 +437,11 @@ def test_iv_paywall():
     라는 안내문을 본문이라고 페이지에 실었다. 뉴데일리 AMP 는 0자였는데도
     요약만 담긴 빈 페이지를 만들었다. 둘 다 안 만드는 게 맞다.
     """
+    import cstop10 as _cs
     import telegraph
+    # 다른 테스트가 _fetchable 을 스텁으로 바꿔 놨을 수 있다. 원본으로 되돌린다.
+    if hasattr(_cs, "_ORIG_FETCHABLE"):
+        _cs._fetchable = _cs._ORIG_FETCHABLE
     print("\n[IV] 페이월·추출실패 판정")
 
     check("더벨은 유료 매체 목록에",
@@ -454,6 +473,36 @@ def test_iv_paywall():
     # 유료 도메인은 네트워크를 타지 않고 바로 거른다
     paras, why = telegraph.fetch_article("https://m.thebell.co.kr/m/newsview.asp?x=1")
     check("유료 매체는 즉시 생략", (paras, bool(why)), ([], True))
+    check("도메인만으로 판정(네트워크 안 탐)",
+          telegraph.is_paywalled("https://m.thebell.co.kr/x"), True)
+    check("무료 매체는 통과",
+          telegraph.is_paywalled("https://www.yna.co.kr/x"), False)
+
+    # **유료기사는 같은 사건의 다른 매체로 갈아탄다.**
+    # 전문을 Instant View 에 실을 수 없는 기사는 올리지 않는다.
+    # 네트워크를 타지 않게 fetch_article 을 바꿔 끼운다 — 유료 도메인은
+    # _fetchable 이 그 전에 거르므로 여기 오지 않는다.
+    import cstop10, time
+    real_fetch = telegraph.fetch_article
+    telegraph.fetch_article = lambda url, timeout=15, title="": (["본문"], "")
+    try:
+        def row(k, head, url, ent="한화생명", sc=90):
+            return (k, head, url, "hanwha_group", "", sc, 0, "c1", ent,
+                    "요약", "왜", time.time(), "acquisition", time.time(), "")
+        grp = [(95, row("a", "하나은행 싱가포르 디지털 금융",
+                        "https://m.thebell.co.kr/x")),
+               (80, row("b", "하나은행 싱가포르 디지털 금융 거점 확대",
+                        "https://www.yna.co.kr/view/AKR1"))]
+        got = cstop10._fetchable(grp, None)
+        check("유료 대신 다른 매체를 고른다",
+              got is not None and "thebell" not in (got[1][2] or ""), True)
+        check("점수가 낮아도 전문 되는 쪽", got[1][0] if got else None, "b")
+
+        only_paid = [(95, row("a", "제목", "https://m.thebell.co.kr/x"))]
+        check("대체할 기사가 없으면 건너뛴다",
+              cstop10._fetchable(only_paid, None), None)
+    finally:
+        telegraph.fetch_article = real_fetch
 
     # **페이지는 언제나 만든다.** 제목은 반드시 Instant View 로 열려야 한다는
     # 절대 규칙 때문이다. 본문이 없으면 긁어온 척하지 않고 우리 요약으로 채우고

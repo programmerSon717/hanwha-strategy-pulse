@@ -188,6 +188,43 @@ def tier_of(r) -> int:
     return 5
 
 
+def _acceptable(r, picked: list) -> bool:
+    """대체까지 끝난 기사를 최종적으로 받아들일 수 있는가.
+
+    **대체 뒤에 다시 봐야 한다.** 유료기사를 같은 사건의 다른 매체 기사로
+    갈아타고 나면 그 기사가 이미 뽑힌 것과 같은 사건일 수도, 경전실이 이미
+    공유한 것일 수도 있다. 갈아타기 전에만 검사해서 한화투자증권 종투사 건이
+    두 번 실렸다(2026-10-02).
+    """
+    if shared.already_shared(r[K_HEAD] or ""):
+        return False
+    return not any(
+        _same(r[K_HEAD] or "", r[K_ENT] or "",
+              r[K_ETYPE] if len(r) > K_ETYPE else "",
+              q[K_HEAD] or "", q[K_ENT] or "",
+              q[K_ETYPE] if len(q) > K_ETYPE else "")
+        for _, q in picked)
+
+
+def _fetchable(group: list, store) -> tuple | None:
+    """묶음에서 **전문을 가져올 수 있는** 기사를 고른다.
+
+    유료기사는 Instant View 에 전문을 실을 수 없다. 같은 사건을 다룬 다른
+    매체 기사가 묶음 안에 있으면 그걸 쓰고, 없으면 None 을 돌려준다
+    (호출부가 그 사건을 통째로 건너뛴다). 2026-10-02 사용자 지정.
+
+    점수가 높은 순으로 보되, 유료 도메인은 네트워크를 타지 않고 바로 거른다.
+    """
+    for sc, r in sorted(group, key=lambda x: -x[0]):
+        url = gnews.resolve(r[K_URL] or "", store)
+        if telegraph.is_paywalled(url):
+            continue
+        paras, why = telegraph.fetch_article(url, title=r[K_HEAD] or "")
+        if not why:
+            return sc, r
+    return None
+
+
 def select(rows: list, count: int | None = None, store=None,
            now: float | None = None) -> list:
     """적합도 순 Top N.
@@ -213,16 +250,23 @@ def select(rows: list, count: int | None = None, store=None,
             best[cid] = (sc, r)
 
     # 2차: 실제 값으로 같은 사건 재판정. 점수 높은 쪽을 남긴다.
+    # **같은 사건 묶음의 멤버를 전부 들고 있는다.**
+    # 대표가 유료기사면 같은 사건을 다룬 다른 매체 기사로 갈아타야 한다.
+    # 예전엔 대표 하나만 남기고 버려서 대체할 후보가 없었다(2026-10-02).
     merged: list = []
+    groups: dict[int, list] = {}
     for sc, r in sorted(best.values(), key=lambda x: -x[0]):
-        dup = False
+        dup = -1
         for i, (sc2, r2) in enumerate(merged):
             if _same(r[K_HEAD] or "", r[K_ENT] or "", r[K_ETYPE] if len(r) > K_ETYPE else "",
                      r2[K_HEAD] or "", r2[K_ENT] or "",
                      r2[K_ETYPE] if len(r2) > K_ETYPE else ""):
-                dup = True
+                dup = i
                 break
-        if not dup:
+        if dup >= 0:
+            groups[dup].append((sc, r))
+        else:
+            groups[len(merged)] = [(sc, r)]
             merged.append((sc, r))
 
     dropped = len(best) - len(merged)
@@ -273,6 +317,8 @@ def select(rows: list, count: int | None = None, store=None,
     def rank_key(x):
         return -(x[0] + TIER_BONUS.get(tier_of(x[1]), 0))
 
+    # 순위를 매긴 뒤에도 묶음을 찾을 수 있게 원래 index 를 들고 다닌다.
+    idx_of = {id(r): i for i, (_, r) in enumerate(merged)}
     ranked = sorted(merged, key=rank_key)
 
     pr = [(sc, r) for sc, r in ranked if csfit.is_pr(r[K_HEAD] or "")]
@@ -309,6 +355,10 @@ def select(rows: list, count: int | None = None, store=None,
                          q[K_ETYPE] if len(q) > K_ETYPE else "")
                    for _, q in picked):
                 continue
+            got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
+            if got_alt is None or not _acceptable(got_alt[1], picked):
+                continue
+            sc, r = got_alt
             picked.append((sc, r))
             reserved_keys.add(r[K_KEY])
             cat_used[catg] = cat_used.get(catg, 0) + 1
@@ -341,6 +391,17 @@ def select(rows: list, count: int | None = None, store=None,
                      q[K_ETYPE] if len(q) > K_ETYPE else "")
                for _, q in picked):
             continue
+        # **유료기사면 같은 사건의 다른 매체 기사로 갈아탄다.**
+        # 전문을 Instant View 에 실을 수 없는 기사는 올리지 않는다. 대체할
+        # 기사가 묶음에 없으면 그 사건을 통째로 건너뛴다(2026-10-02 사용자 지정).
+        got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
+        if got_alt is None:
+            print(f"[cstop10] 전문 확보 불가 — 건너뜀: {(r[K_HEAD] or '')[:34]}")
+            continue
+        if not _acceptable(got_alt[1], picked):
+            continue
+        sc, r = got_alt
+
         cat_used[catg] = cat_used.get(catg, 0) + 1
         used[head] = used.get(head, 0) + 1
         picked.append((sc, r))
@@ -355,7 +416,10 @@ def select(rows: list, count: int | None = None, store=None,
                      q[K_ETYPE] if len(q) > K_ETYPE else "")
                for _, q in picked):
             continue
-        picked.append((sc, r))
+        got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
+        if got_alt is None or not _acceptable(got_alt[1], picked):
+            continue
+        picked.append(got_alt)
 
     # 최종 배열도 추천 순서를 따른다. 홍보성은 맨 아래.
     picked.sort(key=lambda x: (csfit.is_pr(x[1][K_HEAD] or ""), rank_key(x)))

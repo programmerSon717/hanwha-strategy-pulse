@@ -128,6 +128,11 @@ def _key(s: str) -> str:
     return re.sub(r"[^\w가-힣]+", "", s or "")[:60]
 
 
+def is_paywalled(url: str) -> bool:
+    """유료회원 전용 매체인가. 네트워크를 타지 않고 도메인만 본다."""
+    return any(d in (url or "") for d in PAYWALL_DOMAINS)
+
+
 def fetch_article(url: str, timeout: float = 15,
                   title: str = "") -> tuple[list[str], str]:
     """(문단 목록, 실패 사유). 성공하면 사유는 빈 문자열.
