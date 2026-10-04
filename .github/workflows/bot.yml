@@ -81,6 +81,8 @@ jobs:
           # 과거 기사는 끌어오지 않는다 — 최신만 발행
           MAX_AGE_HOURS: ${{ vars.MAX_AGE_HOURS || '12' }}
           USE_TOPICS: "true"
+          # 🔗 top10(링크용). 비어 있으면 topics.json 캐시로 떨어진다(topics.thread_id_for).
+          TG_TOPIC_CS_TOP10_LINKS: ${{ secrets.TG_TOPIC_CS_TOP10_LINKS }}
 
           # **반드시 명시해야 한다.** Actions 에는 .env 가 없고(gitignore),
           # config.py 의 코드 기본값은 true 다. 비워 두면 봇이 정상적으로 돌면서
@@ -176,7 +178,7 @@ jobs:
             # 폴링 1회. 실패해도 루프를 세우지 않는다 — 다음 회차가 이어받는다.
             python main.py --once || echo "  [경고] 폴링 실패 — 다음 회차로 넘어간다"
 
-            # 📌 경전실 Top10(06:55) · ☀️ Morning Brief(07:00)
+            # 📌 경전실 Top10(06:50) · ☀️ Morning Brief(07:00)
             #
             # **GitHub 의 schedule 을 믿지 않는다.** 2026-10-02 06:55 에
             # cstop10.yml·brief.yml 의 cron 이 아예 발화하지 않아 그날 둘 다
@@ -227,11 +229,25 @@ jobs:
               SLEEP=$URGENT_INTERVAL_SEC
               LEFT=$(( POLL_INTERVAL_SEC - WAITED ))
               [[ $SLEEP -gt $LEFT ]] && SLEEP=$LEFT
+
+              # 📌 Top10(06:50) · ☀️ Brief(07:00) 는 **그 시각에** 나가야 한다.
+              # 20분 주기로 물어보던 때는 06:49 회차를 놓치고 07:09 회차에 잡혀
+              # 07:10 에 나갔다(2026-10-03 실측). 그래서 잠을 발행 시각에서 끊는다.
+              DUE=$(python tools/secs_until_due.py 2>/dev/null || echo 86400)
+              if [[ "$DUE" -gt 0 && "$DUE" -lt "$SLEEP" ]]; then
+                # 5초 넘겨 깨운다 — cstop10.due() 가 '시각이 지났다'고 봐야 발행한다.
+                SLEEP=$(( DUE + 5 ))
+                echo "  [예약] $(( DUE / 60 ))분 뒤가 발행 시각 — 그 시각에 깨운다"
+              fi
+
               sleep "$SLEEP"
               WAITED=$(( WAITED + SLEEP ))
               [[ $(date +%s) -ge $LOOP_END ]] && break
               echo "::group::긴급 레인  ($(TZ=Asia/Seoul date '+%H:%M KST'))"
-              true  # 긴급 레인(크립토 경제지표)은 BSP 미사용
+              # 발행 시각이 지났으면 전체 스윕(20분)을 기다리지 않고 여기서 낸다.
+              # 아니면 --if-due 가 즉시 빠지므로 비용이 없다.
+              python main.py --cstop10 --if-due || echo "  [경고] Top10 실패"
+              python main.py --brief   --if-due || echo "  [경고] Brief 실패"
               save_state
               echo "::endgroup::"
             done

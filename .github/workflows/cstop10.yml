@@ -1,12 +1,12 @@
 name: bsp-pulse-cs-top10
 
-# 📌 경전실 Top10 — 매일 KST 06:55.
+# 📌 경전실 Top10 — 매일 KST 06:50.
 #
 # ☀️ Morning Brief(07:00, brief.yml)와 **선정 기준이 다르다.**
 #   Morning Brief : 모델의 strategic_score + 추천 서칭 순서 티어
 #   경전실 Top10  : csfit.score() — 경전실이 실제 공유한 125건의 주제 분포
 #
-# GitHub 의 cron 은 UTC 다. KST 06:55 = UTC 21:55 (전날).
+# GitHub 의 cron 은 UTC 다. KST 06:50 = UTC 21:50 (전날).
 #
 # **예약 실행은 정시에 오지 않는다.** GitHub 무료 티어의 schedule 은 best-effort 라
 # 몇 분에서 수십 분까지 밀린다(크립토 봇 실측: 간격 중앙값 42분, 최대 11시간).
@@ -16,7 +16,7 @@ name: bsp-pulse-cs-top10
 
 on:
   schedule:
-    - cron: "55 21 * * *"
+    - cron: "50 21 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -58,6 +58,7 @@ jobs:
           TG_TOPIC_KEY_ISSUES: ${{ secrets.TG_TOPIC_KEY_ISSUES }}
           TG_TOPIC_DAILY_BRIEF: ${{ secrets.TG_TOPIC_DAILY_BRIEF }}
           TG_TOPIC_CS_TOP10: ${{ secrets.TG_TOPIC_CS_TOP10 }}
+          TG_TOPIC_CS_TOP10_LINKS: ${{ secrets.TG_TOPIC_CS_TOP10_LINKS }}
           # 수동 실행에서 dry_run 을 켜면 발행하지 않는다.
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: python main.py --cstop10

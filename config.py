@@ -77,8 +77,14 @@ class Settings:
 
     # ── Morning Brief (§23) ──
     daily_brief_time: str = os.getenv("DAILY_BRIEF_TIME", "07:00")
-    # 📌 경전실 Top10 발행 시각. Morning Brief 보다 5분 앞선다.
-    cs_top10_time: str = os.getenv("CS_TOP10_TIME", "06:55")
+    # 📌 경전실 Top10 발행 시각. Morning Brief 보다 10분 앞선다.
+    #
+    # 06:55 → 06:50 (2026-10-05 사용자 지정). **이 값만 바꿔선 그 시각에 안 나간다.**
+    # 실제 발행은 bot.yml 의 상시 루프가 --if-due 로 물어볼 때 일어나므로,
+    # 물어보는 주기가 곧 오차다. 20분 주기였을 때 06:49 회차를 놓치고
+    # 다음 07:09 회차에 잡혀 07:10 에 나갔다(2026-10-03 실측).
+    # 그래서 bot.yml 이 이 시각에 **정확히 깨어나도록** 함께 고쳤다.
+    cs_top10_time: str = os.getenv("CS_TOP10_TIME", "06:50")
     daily_brief_count: int = int(os.getenv("DAILY_BRIEF_COUNT", "10"))
     # 같은 회사/같은 사건이 브리프를 독식하지 않게 하는 상한 (§24-6)
     daily_brief_max_per_entity: int = int(os.getenv("DAILY_BRIEF_MAX_PER_ENTITY", "4"))
@@ -119,6 +125,8 @@ class Settings:
             ("global_finance",      "TG_TOPIC_GLOBAL_FINANCE"),
             ("key_issues",          "TG_TOPIC_KEY_ISSUES"),
             ("daily_brief",         "TG_TOPIC_DAILY_BRIEF"),
+            ("cs_top10",            "TG_TOPIC_CS_TOP10"),
+            ("cs_top10_links",      "TG_TOPIC_CS_TOP10_LINKS"),
         )
     })
 

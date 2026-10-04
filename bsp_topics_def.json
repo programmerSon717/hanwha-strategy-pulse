@@ -358,6 +358,18 @@
       "include_patterns": [],
       "exclude_patterns": [],
       "note": "Aggregation Topic. 매일 KST 06:55 에 '경전실 적합도' 기준 Top10 만 게시한다. ☀️ Morning Brief(07:00, strategic_score 기준)와는 선정 기준이 다르다 — 이쪽은 경전실이 실제로 공유한 125건(2026-09-15~10-01)의 주제 분포를 학습한 가중치로 뽑는다. 기존 Topic 과 중복 허용."
+    },
+    {
+      "id": "cs_top10_links",
+      "telegram_topic_name": "🔗 top10(링크용)",
+      "priority": 0,
+      "base_weight": 0,
+      "aggregation": true,
+      "entities": [],
+      "keywords": [],
+      "include_patterns": [],
+      "exclude_patterns": [],
+      "note": "Aggregation Topic. 📌 경전실 Top10 에 실린 10건의 **원문 기사 주소만** 한 건씩 따로 게시한다(2026-10-05 사용자 지정: 한 메시지에 몰아 담지 않는다). 메시지당 미리보기 카드가 하나씩 붙어 링크를 바로 확인·복사할 수 있게 하는 것이 목적이다. 본문·요약은 넣지 않는다 — 그건 📌 경전실 Top10 쪽 역할이다."
     }
   ]
 }

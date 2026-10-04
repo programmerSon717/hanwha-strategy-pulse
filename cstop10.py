@@ -612,6 +612,35 @@ def render_item(r, url: str | None = None, iv: str | None = None,
     return "\n".join(parts)
 
 
+def render_links(picked: list, label: str, _store=None) -> list[tuple[str, str]]:
+    """🔗 top10(링크용) 탭에 나갈 [(본문, 미리보기주소)] — **기사 1건당 1메시지**.
+
+    2026-10-05 사용자 지정. 📌 경전실 Top10 과 번호가 1:1로 맞고, 그 번호로
+    본문 쪽 해설을 찾아갈 수 있어야 한다. 그래서 번호·제목·원문 주소만 넣는다.
+
+    **한 메시지에 몰아 담지 않는다.** 텔레그램은 메시지당 미리보기 카드를
+    하나만 붙이므로(publisher.send_raw 주석), 10건을 묶으면 9건은 카드가 없는
+    맨 주소로 남는다. 한 건씩 보내야 10건 전부 카드가 뜬다.
+
+    주소는 **원문 기사**다 — 인스턴트뷰(telegra.ph)가 아니다. 이 탭은 복사해서
+    메일·보고서에 붙이는 용도라 telegra.ph 중계 주소는 쓸모가 없다.
+    인스턴트뷰로 읽는 건 📌 경전실 Top10 쪽 제목 링크가 한다.
+    """
+    e = html.escape
+    out = []
+    for i, (_, r) in enumerate(picked, 1):
+        url = gnews.resolve(r[K_URL] or "", _store)
+        if not url:
+            continue
+        cat = topics.display_name(r[K_PRI] or "") or ""
+        head = (r[K_HEAD] or "").strip()
+        text = (f"<b>{i}.</b> <b>[{e(cat)}]</b>\n"
+                f"{e(head)}\n"
+                f'<a href="{e(url, quote=True)}">{e(url)}</a>')
+        out.append((text, url))
+    return out
+
+
 def _first_urls(msgs: list[str], items: list[str], urls: list[str]) -> list[str]:
     """조각마다 **맨 앞 기사**의 주소. 미리보기는 메시지당 하나뿐이라 대표를 고른다."""
     out, idx = [], 0
@@ -692,6 +721,9 @@ async def run(client, store, dry_run: bool | None = None) -> int | None:
             print("─" * 60)
             print(m)
         print("─" * 60)
+        print("[cstop10] 🔗 링크용 탭에 나갈 것 (기사 1건당 1메시지):")
+        for text, _ in render_links(picked, label, store):
+            print("  · " + text.replace("\n", " / "))
         print("[cstop10] DRY_RUN — 발행하지 않았습니다")
         return None
 
@@ -706,6 +738,27 @@ async def run(client, store, dry_run: bool | None = None) -> int | None:
         first = first or mid
         if i < len(msgs) - 1:
             await asyncio.sleep(0.6)
+    # 🔗 top10(링크용) — 같은 10건의 원문 주소를 한 건씩 따로 보낸다.
+    # 본문 발행이 끝난 뒤에 한다. 이쪽이 실패해도 Top10 은 이미 나가 있어야 한다.
+    links_thread = topics.thread_id_for("cs_top10_links")
+    if links_thread:
+        sent = 0
+        for i, (text, url) in enumerate(render_links(picked, label, store)):
+            try:
+                mid = await publisher.send_raw(client, text, links_thread,
+                                               preview_url=url)
+            except Exception as exc:                      # noqa: BLE001
+                print(f"[cstop10] 링크 {i + 1}번 발행 실패 — {exc}")
+                continue
+            # window_end 가 (scope, window_end) 유일키다. 본문 쪽과 겹치지 않게 비켜 둔다.
+            store.record_agg_message("cs_top10_links", until + 100 + i, mid)
+            sent += 1
+            await asyncio.sleep(0.6)   # 텔레그램 초당 제한을 피한다
+        print(f"[cstop10] 🔗 링크용 {sent}건 발행")
+    else:
+        print("[cstop10] 🔗 링크용 탭 thread_id 없음 — 건너뜀 "
+              "(scripts/setup_topics.py --create 로 탭을 만들어라)")
+
     # 실린 기사를 표시해 둔다 — 다음 회차에서 다시 뽑히지 않게.
     store.mark_cstop10([r[K_KEY] for _, r in picked],
                        datetime.fromtimestamp(until, KST).strftime("%Y-%m-%d"))

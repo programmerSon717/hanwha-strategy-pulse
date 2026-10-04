@@ -82,13 +82,14 @@ def test_entity_alias():
 
 def test_topic_routing():
     """§5·§7 — 토픽 키와 보정."""
-    print("\n[§5] 토픽 10개")
-    # 2026-10-01: 📌 경전실 Top10 추가. Primary 7개는 그대로다 —
-    #              새 토픽은 집계 토픽이라 모델이 지정하지 않는다.
-    check("토픽 수", len(topics.CATEGORIES), 10)
+    print("\n[§5] 토픽 11개")
+    # 2026-10-01: 📌 경전실 Top10 추가.
+    # 2026-10-05: 🔗 top10(링크용) 추가.
+    # 둘 다 Primary 7개는 그대로다 — 집계 토픽이라 모델이 지정하지 않는다.
+    check("토픽 수", len(topics.CATEGORIES), 11)
     check("Primary 지정 가능 토픽 7개", len(PRIMARY_TOPIC_IDS), 7)
     check("집계 토픽", topics.AGGREGATION,
-          {"key_issues", "daily_brief", "cs_top10"})
+          {"key_issues", "daily_brief", "cs_top10", "cs_top10_links"})
     for tid, name in [
         ("hanwha_group", "🏢 한화그룹"), ("ma_governance", "🤝 M&A · 지배구조"),
         ("insurance_finance", "🏦 보험 · 금융"), ("regulation_policy", "⚖️ 규제 · 정책"),
@@ -579,16 +580,83 @@ def test_due_gate():
     def at(h, m):
         return datetime(2026, 10, 2, h, m, tzinfo=KST).timestamp()
 
+    # 2026-10-05: 06:55 → 06:50. 사용자가 지정한 시각이다. 바꾸지 마라.
+    check("발행 시각이 06:50", settings.cs_top10_time, "06:50")
     ok, _ = cstop10.due(S(False), at(6, 30))
     check("06:30 아직 이름", ok, False)
-    ok, _ = cstop10.due(S(False), at(6, 55))
-    check("06:55 정각이면 발행", ok, True)
+    ok, _ = cstop10.due(S(False), at(6, 49))
+    check("06:49 아직 이름", ok, False)
+    ok, _ = cstop10.due(S(False), at(6, 50))
+    check("06:50 정각이면 발행", ok, True)
     ok, _ = cstop10.due(S(False), at(9, 0))
     check("늦어도 그날 안이면 발행", ok, True)
     ok, _ = cstop10.due(S(True), at(9, 0))
     check("오늘 이미 나갔으면 안 함", ok, False)
     ok, _ = cstop10.due(S(False), at(23, 59))
     check("자정 직전에도 발행", ok, True)
+
+
+def test_top10_links():
+    """🔗 top10(링크용) — 기사 1건당 1메시지, 원문 주소 (2026-10-05 사용자 지정).
+
+    왜 검사하나. 한 메시지에 10건을 몰아 담으면 텔레그램이 미리보기 카드를
+    하나만 붙여 9건이 맨 주소로 남는다. 그래서 '건수 = 메시지 수' 가 규칙이다.
+    주소도 telegra.ph 가 아니라 원문이어야 한다 — 복사해서 붙이는 용도다.
+    """
+    import cstop10
+    print("\n[§5] 🔗 top10(링크용)")
+
+    check("탭 정의 있음", "cs_top10_links" in topics.CATEGORIES, True)
+    check("탭 이름", topics.display_name("cs_top10_links"), "🔗 top10(링크용)")
+    check("집계 탭이다", "cs_top10_links" in topics.AGGREGATION, True)
+    check("모델이 지정할 수 없다", "cs_top10_links" in PRIMARY_TOPIC_IDS, False)
+
+    # K_* 인덱스에 맞춘 최소 행. 길이는 K_TEXT 까지 채운다.
+    def row(head, url, pri):
+        r = [None] * (cstop10.K_TEXT + 1)
+        r[cstop10.K_HEAD], r[cstop10.K_URL], r[cstop10.K_PRI] = head, url, pri
+        return r
+
+    picked = [
+        (0, row("한화생명, 애큐온캐피탈 인수", "https://ex.co/a", "hanwha_group")),
+        (0, row("교보생명 스테이블코인 실증", "https://ex.co/b", "insurance_finance")),
+    ]
+    msgs = cstop10.render_links(picked, "2026.10.05 Sun", None)
+    check("기사 1건당 1메시지", len(msgs), 2)
+    check("1번에 번호", msgs[0][0].startswith("<b>1.</b>"), True)
+    check("2번에 번호", msgs[1][0].startswith("<b>2.</b>"), True)
+    check("카테고리 들어감", "🏢 한화그룹" in msgs[0][0], True)
+    check("제목 들어감", "애큐온캐피탈" in msgs[0][0], True)
+    check("원문 주소 들어감", "https://ex.co/a" in msgs[0][0], True)
+    check("미리보기 주소 = 원문", msgs[0][1], "https://ex.co/a")
+    check("telegra.ph 를 쓰지 않음", "telegra.ph" in msgs[0][0], False)
+    # 본문·요약은 이쪽 역할이 아니다. 📌 경전실 Top10 과 겹치면 탭이 무의미해진다.
+    check("🐧 해설이 섞이지 않음", "🐧" in msgs[0][0], False)
+    # 주소가 없는 행은 조용히 건너뛴다 — 빈 링크를 올리면 안 된다.
+    check("주소 없으면 제외",
+          len(cstop10.render_links([(0, row("제목만", "", "hanwha_group"))],
+                                   "x", None)), 0)
+
+
+def test_secs_until_due():
+    """발행 시각에 정확히 깨어나기 (2026-10-03 07:10 지연 회귀).
+
+    20분 주기로만 물어보던 때는 06:49 회차를 놓치고 07:09 회차에 잡혀
+    07:10 에 나갔다. bot.yml 의 대기 루프가 이 값을 보고 잠을 끊는다.
+    """
+    import subprocess
+    import sys
+    print("\n[타이밍] 발행 시각까지 남은 초")
+    out = subprocess.run([sys.executable, "tools/secs_until_due.py"],
+                         capture_output=True, text=True)
+    check("실행 성공", out.returncode, 0)
+    try:
+        secs = int(out.stdout.strip())
+    except ValueError:
+        secs = -1
+    check("정수 한 줄", secs >= 0, True)
+    # 06:50·07:00 중 가까운 쪽까지. 둘 다 지났으면 FAR(86400).
+    check("24시간 안", secs <= 86400, True)
 
 
 def test_source_weight():
@@ -801,6 +869,8 @@ def main():
     test_iv_paywall()
     test_shared_and_ads()
     test_due_gate()
+    test_top10_links()
+    test_secs_until_due()
     test_source_weight()
     test_schema()
     test_render()

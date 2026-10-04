@@ -38,6 +38,7 @@ ENV_NAMES = {
     "key_issues":          "TG_TOPIC_KEY_ISSUES",
     "daily_brief":         "TG_TOPIC_DAILY_BRIEF",
     "cs_top10":            "TG_TOPIC_CS_TOP10",
+    "cs_top10_links":      "TG_TOPIC_CS_TOP10_LINKS",
 }
 
 
@@ -59,7 +60,7 @@ async def main():
         sys.exit("TELEGRAM_CHANNEL_ID 가 없습니다. .env 를 먼저 채우세요.")
 
     if mode == "--plan":
-        print("아래 9개 토픽을 만듭니다. (지금은 아무것도 만들지 않았습니다)\n")
+        print(f"아래 {len(topics.CATEGORIES)}개 토픽을 만듭니다. (지금은 아무것도 만들지 않았습니다)\n")
         for tid, name in topics.CATEGORIES.items():
             print(f"  {name}    → {ENV_NAMES[tid]}")
         print(f"\n대상 그룹: {settings.telegram_channel_id}")
@@ -77,7 +78,7 @@ async def main():
         sys.exit(f"알 수 없는 옵션: {mode}  (--plan | --create | --show)")
 
     print(f"대상 그룹: {settings.telegram_channel_id}")
-    ans = input("이 그룹에 토픽 9개를 만듭니다. 계속할까요? [y/N] ").strip().lower()
+    ans = input(f"이 그룹에 토픽 {len(topics.CATEGORIES)}개 중 없는 것만 만듭니다. 계속할까요? [y/N] ").strip().lower()
     if ans != "y":
         print("취소했습니다.")
         return
