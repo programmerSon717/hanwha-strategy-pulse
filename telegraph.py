@@ -19,6 +19,8 @@ import re
 
 import httpx
 
+from config import settings
+
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120 Safari/537.36")
 API = "https://api.telegra.ph"
@@ -28,8 +30,19 @@ EXCERPT_PARAS = 40
 EXCERPT_CHARS = 12000
 
 
-def get_token(store) -> str | None:
-    tok = store.get_setting("telegraph_token") if store else None
+def get_token(store=None) -> str | None:
+    """telegra.ph access_token.
+
+    **DB 에 저장하지 않는다.** 예전에는 botstate.sqlite3 의 setting 테이블에
+    캐시했는데, 그 파일은 커밋된다. 레포를 퍼블릭으로 바꾸는 순간(2026-10-05)
+    토큰이 그대로 공개돼 남이 봇이 만든 Instant View 페이지를 고치거나 지울 수
+    있게 된다. 그래서 환경변수(TELEGRAPH_TOKEN)로만 받는다.
+
+    비어 있어도 봇은 정상 동작한다 — 1회용 계정을 만들어 그 실행에서만 쓴다.
+    페이지 생성에는 지장이 없다(이 봇은 만든 페이지를 고치지 않는다).
+    다만 실행마다 계정이 새로 생기므로 .env 에 넣어 두는 편이 낫다.
+    """
+    tok = (settings.telegraph_token or "").strip()
     if tok:
         return tok
     try:
@@ -39,8 +52,9 @@ def get_token(store) -> str | None:
         }).json()
         if r.get("ok"):
             tok = r["result"]["access_token"]
-            if store:
-                store.put_setting("telegraph_token", tok)
+            # **일부러 저장하지 않는다.** 위 docstring 참고.
+            print("[telegraph] TELEGRAPH_TOKEN 이 비어 1회용 계정을 만들었다. "
+                  ".env 와 GitHub Secret 에 넣어 두면 재사용된다.")
             return tok
     except Exception:
         pass

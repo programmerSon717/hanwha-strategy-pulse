@@ -72,6 +72,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # telegra.ph IV 페이지용. 비어도 돌지만 실행마다 계정이 새로 생긴다.
+          TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_TOKEN }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.1-flash-lite' }}
           # 3 이 기본이다. 4로 올리면 토큰화 주식 거래량·온체인 출금 같은
           # 진짜 시장 뉴스까지 잘린다(실측: 유효 20건 중 발행 가능 1건).

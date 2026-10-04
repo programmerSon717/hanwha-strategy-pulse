@@ -43,6 +43,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # telegra.ph IV 페이지용. 비어도 돌지만 실행마다 계정이 새로 생긴다.
+          TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_TOKEN }}
           USE_TOPICS: "true"
           TG_TOPIC_HANWHA_GROUP: ${{ secrets.TG_TOPIC_HANWHA_GROUP }}
           TG_TOPIC_MA_GOVERNANCE: ${{ secrets.TG_TOPIC_MA_GOVERNANCE }}

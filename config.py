@@ -105,6 +105,14 @@ class Settings:
     run_budget_sec: int = int(os.getenv("RUN_BUDGET_SEC", "0"))
     db_path: str = os.getenv("DB_PATH", "botstate.sqlite3")
 
+    # telegra.ph access_token.
+    #
+    # **DB(botstate.sqlite3) 에 넣지 않는다.** 그 파일은 커밋되므로
+    # 레포가 퍼블릭이 되는 순간 토큰이 그대로 공개된다(2026-10-05 전환).
+    # 비어 있어도 봇은 돈다 — telegraph.get_token 이 1회용 계정을 만든다.
+    # 다만 그러면 매 실행마다 계정이 새로 생기므로 넣어 두는 게 낫다.
+    telegraph_token: str = os.getenv("TELEGRAPH_TOKEN", "")
+
     # ── Forum Topic (§33) ──
     # message_thread_id 는 코드에 하드코딩하지 않는다. .env 에서 읽는다.
     use_topics: bool = os.getenv("USE_TOPICS", "false").lower() == "true"
