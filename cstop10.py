@@ -57,10 +57,15 @@ def due(store, now: float | None = None) -> tuple[bool, str]:
 
 
 def window(now: float | None = None) -> tuple[float, float, str]:
-    """전날 06:55 ~ 오늘 06:55."""
+    """후보를 뽑을 구간. 기본은 '하루 전 같은 시각 ~ 지금'.
+
+    길이는 settings.cs_top10_window_hours 가 정한다. 봇이 며칠 멈췄다 살아난
+    날은 24시간 창에 후보가 모자라 Top10 이 성립하지 않는다 — 그 설명은
+    config.cs_top10_window_hours 주석에 있다.
+    """
     now = now or datetime.now(KST).timestamp()
     until = now
-    since = now - 24 * 3600
+    since = now - settings.cs_top10_window_hours * 3600
     label = datetime.fromtimestamp(now, KST).strftime("%Y.%m.%d %a")
     return since, until, label
 

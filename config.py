@@ -85,6 +85,14 @@ class Settings:
     # 다음 07:09 회차에 잡혀 07:10 에 나갔다(2026-10-03 실측).
     # 그래서 bot.yml 이 이 시각에 **정확히 깨어나도록** 함께 고쳤다.
     cs_top10_time: str = os.getenv("CS_TOP10_TIME", "06:50")
+    # Top10 을 뽑는 시간 창(시간). 평소에는 24 가 맞다 — '어제 아침부터 지금까지'.
+    #
+    # **봇이 며칠 멈췄다 살아났을 때는 넓혀야 한다.** 멈춘 동안 수집·발행이
+    # 없었으니 24시간 창에 후보가 10여 건밖에 안 들어오고, 같은 사건 접기와
+    # 기게재 제외를 거치면 4건으로 줄어 Top10 이 성립하지 않는다(2026-10-05 실측:
+    # 24h 창 16건 → 선정 4건 / 72h 창 57건). 그때만 CS_TOP10_WINDOW_HOURS=72 로
+    # 한 번 돌리면 된다. 멈춘 기간의 뉴스는 팀에 공유된 적이 없으니 중복도 아니다.
+    cs_top10_window_hours: int = int(os.getenv("CS_TOP10_WINDOW_HOURS", "24"))
     daily_brief_count: int = int(os.getenv("DAILY_BRIEF_COUNT", "10"))
     # 같은 회사/같은 사건이 브리프를 독식하지 않게 하는 상한 (§24-6)
     daily_brief_max_per_entity: int = int(os.getenv("DAILY_BRIEF_MAX_PER_ENTITY", "4"))
