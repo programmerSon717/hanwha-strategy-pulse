@@ -100,7 +100,8 @@ def _stem_overlap(ta: set, tb: set, minlen: int = 2) -> bool:
     return _stem_hits(ta, tb, minlen) > 0
 
 
-def _same(a_title, a_ents, a_type, b_title, b_ents, b_type) -> bool:
+def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
+          strict: bool = False) -> bool:
     """두 기사가 같은 사건인가. **신호를 합산해서** 판정한다.
 
     저장된 cluster_id 를 믿으면 안 된다 — 모델이 main_entities 를 기사마다
@@ -147,6 +148,24 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type) -> bool:
     names = {events._norm(x) for x in inter}
     hits = _stem_hits(ta - names, tb - names)
     score += 2 if hits >= 2 else (1 if hits else 0)
+
+    if strict:
+        # **과거 14일치 전체와 비교할 때 쓰는 엄격 모드.**
+        #
+        # 기본 모드는 '하루치 후보 풀 안에서' 비교하라고 만든 것이라 과감하다
+        # (docstring 의 비대칭 논리). 그걸 2주치 전체에 그대로 대면 회사명만
+        # 같으면 걸린다 — "카카오뱅크 글로벌 디지털자산 확장" 이 2주 전
+        # "카카오뱅크 개인사업자 대출 4조" 와 같은 사건으로 묶여 10/5 Top10 이
+        # 0건이 됐다(2026-10-05).
+        #
+        # 그래서 **회사명 말고 겹치는 낱말**을 반드시 요구한다. 애큐온 인수
+        # 반복 보도는 '애큐온'·'인수' 가 공통으로 남아 걸리고, 같은 회사의
+        # 다른 사건은 걸리지 않는다.
+        #
+        # hits 1 로는 모자랐다. "카카오뱅크 글로벌 디지털자산 확장" 이 2주 전
+        # "카카오뱅크 개인사업자 대출" 과 낱말 하나로 묶였다. 2개를 요구하면
+        # 애큐온 반복 보도('애큐온'+'인수')는 그대로 걸리고 오탐은 빠진다.
+        return score >= 3 and hits >= 2
 
     return score >= 3
 
@@ -290,6 +309,30 @@ def select(rows: list, count: int | None = None, store=None,
                           for h, e, t in recent)
                 if hit:
                     print(f"[cstop10] 기게재 사건 제외: {(r[K_HEAD] or '')[:40]}")
+                else:
+                    keep.append((sc, r))
+            merged = keep
+
+    # 3.5차: **창 시작 전에 이미 일반 탭으로 나간 사건**은 뺀다.
+    #
+    # 3차는 '이전 Top10 에 실렸던 것'만 본다. 그런데 애큐온 인수 건처럼 일반
+    # 탭에는 여러 번 나갔지만 Top10 에는 안 실린 사건이 있다. 팀은 이미 그
+    # 사건을 봤는데 Top10 에서 또 보게 된다(2026-10-05 지적).
+    #
+    # 창 **안**에서 발행된 것은 빼지 않는다 — 그건 오늘 처음 전한 뉴스이고,
+    # Top10 은 원래 그중에서 고르는 물건이다. 창 **밖**(그 전)에 나간 것만 뺀다.
+    if store is not None:
+        since, _until, _lab = window(now)
+        prior = store.published_clusters_before(since)
+        if prior:
+            keep = []
+            for sc, r in merged:
+                hit = any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                                r[K_ETYPE] if len(r) > K_ETYPE else "",
+                                h or "", e or "", t or "", strict=True)
+                          for h, e, t in prior)
+                if hit:
+                    print(f"[cstop10] 일반탭 기발행 사건 제외: {(r[K_HEAD] or '')[:38]}")
                 else:
                     keep.append((sc, r))
             merged = keep
@@ -703,13 +746,23 @@ def render_all(picked: list, label: str, _store=None) -> tuple[list[str], list[s
     return base, []
 
 
-async def run(client, store, dry_run: bool | None = None) -> int | None:
+async def run(client, store, dry_run: bool | None = None,
+              asof: float | None = None) -> int | None:
+    """asof 를 주면 **그 시각 기준**으로 뽑는다(과거분 소급 생성용).
+
+    봇이 멈춰 있던 날의 Top10 을 뒤늦게 만들 때 쓴다. 창·라벨·중복 판정이
+    전부 그 시각을 기준으로 돌아가므로, 그날 아침에 돌았을 때와 같은 결과가
+    나온다. 평소 운영에서는 쓰지 않는다(asof=None → 지금).
+    """
     import asyncio
     import publisher
     dry = settings.dry_run if dry_run is None else dry_run
-    since, until, label = window()
-    rows = store.cstop10_candidates(since, until, settings.discard_threshold)
-    picked = select(rows, store=store)
+    since, until, label = window(asof)
+    # 소급 생성(asof)은 원문 발행일로 자른다 — 그날 봇이 멈춰 있었으면
+    # sent_at 기준 후보가 0건이기 때문이다. store.cstop10_candidates 주석 참고.
+    rows = store.cstop10_candidates(since, until, settings.discard_threshold,
+                                    by_origin=asof is not None)
+    picked = select(rows, store=store, now=asof)
     span = (f"{datetime.fromtimestamp(since, KST):%m-%d %H:%M}"
             f" ~ {datetime.fromtimestamp(until, KST):%m-%d %H:%M}")
     print(f"[cstop10] 구간 {span} · 후보 {len(rows)}건 → 선정 {len(picked)}건")

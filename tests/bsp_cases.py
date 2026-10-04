@@ -219,6 +219,8 @@ def test_cstop10():
         def __init__(self, last): self._l = last
         def last_pr_pick(self): return self._l
         def cstop10_recent_clusters(self, since): return []
+        # 2026-10-05: select() 가 '창 시작 전에 일반 탭으로 나간 사건'도 본다.
+        def published_clusters_before(self, before, since=None): return []
 
     picked = cstop10.select(rows, count=10, store=S(None), now=now)
     npr = sum(1 for _, r in picked if csfit.is_pr(r[1]))
@@ -576,6 +578,10 @@ def test_due_gate():
     class S:
         def __init__(self, ran=False): self.ran = ran
         def agg_ran_on(self, scope, a, b): return self.ran
+        # select() 가 쓰는 조회들. due() 검사에는 쓰이지 않지만,
+        # 같은 가짜 store 가 다른 검사로 흘러가도 터지지 않게 둔다.
+        def cstop10_recent_clusters(self, since): return []
+        def published_clusters_before(self, before, since=None): return []
 
     def at(h, m):
         return datetime(2026, 10, 2, h, m, tzinfo=KST).timestamp()
@@ -657,6 +663,28 @@ def test_secs_until_due():
     check("정수 한 줄", secs >= 0, True)
     # 06:50·07:00 중 가까운 쪽까지. 둘 다 지났으면 FAR(86400).
     check("24시간 안", secs <= 86400, True)
+
+
+def test_paywall_gate_everywhere():
+    """유료 매체는 **일반 탭에도** 내보내지 않는다 (2026-10-05 회귀).
+
+    Top10 에는 같은 사건의 다른 매체로 갈아타는 관문이 있었는데 일반 발행
+    경로에는 없어서 딜사이트 기사가 그대로 나갔다(msg 384). 팀 입장에서는
+    열어도 전문을 못 읽는 링크라 쓸모가 없다.
+    """
+    import telegraph
+    print("\n[유료] 일반 탭 유료 차단")
+    for d in ("dealsite.co.kr", "thebell.co.kr", "investchosun.com", "einfomax.co.kr"):
+        check(f"{d} 는 유료", telegraph.is_paywalled(f"https://www.{d}/news/1"), True)
+    check("무료 매체는 통과(ebn)", telegraph.is_paywalled("https://www.ebn.co.kr/news/1"), False)
+
+    src = open("main.py", encoding="utf-8").read()
+    gate = src.find("telegraph.is_paywalled")
+    step5 = src.find("STEP 5: Event Deduplication")
+    check("main.py 에 유료 관문이 있다", gate > 0, True)
+    # 관문이 Event 등록 뒤에 있으면, 무료 매체 기사가 '중복 Event' 에 막혀
+    # 영영 못 나간다. 반드시 앞이어야 한다.
+    check("관문이 Event 등록보다 앞", 0 < gate < step5, True)
 
 
 def test_source_weight():
@@ -870,6 +898,7 @@ def main():
     test_shared_and_ads()
     test_due_gate()
     test_top10_links()
+    test_paywall_gate_everywhere()
     test_secs_until_due()
     test_source_weight()
     test_schema()

@@ -36,8 +36,10 @@ from collectors import (binance, bithumb, upbit, rss, telegram_channels, tg_web,
 from config import settings
 import events
 from models import NewsItem
+import gnews
 import prefilter
 import publisher
+import telegraph
 from publisher import publish
 import topics as _topics
 from store import Store, normalize_url
@@ -358,7 +360,7 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
                         dry_run: bool = False):
     stats: dict[str, int] = {}
     # BSP 판정 카운터 (§35 집계 로깅)
-    rejected = below = stored_only = clustered = 0
+    rejected = below = stored_only = clustered = paywalled = 0
     event_index = events.EventIndex()
     key_issue_count = store.key_issues_since(time.time() - 24 * 3600)
     budget = settings.run_budget_sec
@@ -511,6 +513,24 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             print(f"[저장만] score {score} {item.title[:48]}")
             continue
 
+        # ── 유료기사는 내보내지 않는다 (2026-10-02 지정 · 2026-10-05 일반 탭까지 확대) ──
+        #
+        # 전문을 못 읽는 링크는 팀에 쓸모가 없다. Top10 에는 같은 사건의 다른
+        # 매체로 갈아타는 관문(_fetchable)이 있는데 일반 탭에는 없어서
+        # 딜사이트 기사가 그대로 나갔다(2026-10-05, msg 384).
+        #
+        # **Event 등록 전에 거른다.** 등록한 뒤 거르면 같은 사건을 다룬 무료
+        # 매체 기사가 뒤늦게 들어와도 '중복 Event' 에 막혀 영영 못 나간다.
+        # 여기서 빠지면 무료 매체 쪽이 대표가 되어 정상 발행된다.
+        _resolved = gnews.resolve(item.url or "", store)
+        if telegraph.is_paywalled(_resolved):
+            _judge(item, key, relevant=True, score=score, topic=topic,
+                   reason="유료 매체 — 같은 사건의 무료 매체 기사를 기다린다",
+                   dry=dry_run)
+            paywalled += 1
+            print(f"[유료제외] {item.source} {item.title[:44]}")
+            continue
+
         # ── STEP 5: Event Deduplication / Clustering (§21) ──
         title_for_event = data.get("title_ko") or item.title
         dup_fp = event_index.match(data, title_for_event)
@@ -622,6 +642,9 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
               f"(<{settings.general_topic_threshold}) {stored_only}건")
     if clustered:
         print(f"[집계] 동일 Event 로 묶여 제외 {clustered}건")
+    if paywalled:
+        print(f"[집계] 유료 매체라 제외 {paywalled}건 "
+              f"— 같은 사건의 무료 매체 기사를 기다린다")
 
 
 async def recent_tg_web(client: httpx.AsyncClient, hours: int = 6) -> list[NewsItem]:
@@ -730,8 +753,15 @@ async def main():
                     print(f"[cstop10] 건너뜀 — {why}")
                     return
                 print(f"[cstop10] 발행 — {why}")
+            # --asof 2026-10-03T06:50 : 그 시각 기준으로 소급 생성한다.
+            # 봇이 멈춰 있던 날의 Top10 을 뒤늦게 만들 때만 쓴다.
+            _asof = None
+            if "--asof" in sys.argv:
+                _raw = sys.argv[sys.argv.index("--asof") + 1]
+                _asof = datetime.fromisoformat(_raw).replace(tzinfo=KST).timestamp()
+                print(f"[cstop10] asof {_raw} KST 기준으로 생성한다")
             await cstop10.run(client, store,
-                              dry_run=True if dry_run else None)
+                              dry_run=True if dry_run else None, asof=_asof)
             return
 
         if "--purge" in sys.argv:

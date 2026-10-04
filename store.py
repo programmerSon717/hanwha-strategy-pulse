@@ -420,13 +420,20 @@ class Store:
             ).fetchall()
 
     def cstop10_candidates(self, since_ts: float, until_ts: float,
-                           min_score: int) -> list:
+                           min_score: int, by_origin: bool = False) -> list:
         """📌 경전실 Top10 후보.
 
         brief_candidates 와 다른 점: **이미 Top10 에 실린 기사를 뺀다.**
         Morning Brief 의 daily_brief_date 와는 별개 컬럼이다 — 두 탭은 선정
         기준이 달라 한쪽에 실렸다고 다른 쪽에서 빼면 안 된다.
+
+        by_origin: 창을 **기사 원문 발행시각**으로 자른다. 소급 생성 전용이다.
+          평소에는 sent_at(봇이 내보낸 시각)이 맞다 — Top10 은 "그날 팀에
+          나간 것 중의 Top10" 이기 때문이다. 그런데 봇이 멈춰 있던 날은
+          sent_at 이 통째로 비어 후보가 0건이 된다(10/4·10/5 실측). 그런 날을
+          뒤늦게 만들 때는 "그날 **보도된** 기사" 로 잡아야 뜻이 맞는다.
         """
+        _col = "origin_at" if by_origin else "sent_at"
         with self._conn() as c:
             return c.execute(
                 "SELECT key, headline, source_url, primary_topic, secondary_topics,"
@@ -435,11 +442,30 @@ class Store:
                 "  FROM published"
                 " WHERE strategic_score IS NOT NULL"
                 "   AND strategic_score >= ?"
-                "   AND sent_at > ? AND sent_at <= ?"
+                f"   AND {_col} > ? AND {_col} <= ?"
                 "   AND (cs_top10_date IS NULL OR cs_top10_date='')"
                 " ORDER BY strategic_score DESC, sent_at DESC",
                 (min_score, since_ts, until_ts),
             ).fetchall()
+
+    def published_clusters_before(self, before_ts: float,
+                                  since_ts: float | None = None) -> list:
+        """**창 시작 전에 이미 일반 탭으로 나간** 사건들의 (제목, 엔티티, 종류).
+
+        Top10 의 기게재 제외가 '이전 Top10 에 실렸던 것'만 봐서, 일반 탭에
+        여러 번 나간 애큐온 인수 건이 Top10 에 또 올라갔다(2026-10-05 지적).
+        팀은 이미 그 사건을 봤으므로 Top10 에서 다시 볼 이유가 없다.
+
+        창 **안**에서 발행된 것은 제외하지 않는다 — 그건 오늘 처음 전한
+        뉴스이고, Top10 은 원래 그날 나간 것 중에서 고르는 물건이다.
+        """
+        since_ts = since_ts if since_ts is not None else before_ts - 14 * 24 * 3600
+        with self._conn() as c:
+            return c.execute(
+                "SELECT headline, main_entities, event_type FROM published"
+                " WHERE sent_at < ? AND sent_at >= ?"
+                "   AND headline IS NOT NULL AND headline <> ''",
+                (before_ts, since_ts)).fetchall()
 
     def mark_cstop10(self, keys: list, date_str: str):
         with self._conn() as c:
@@ -456,7 +482,10 @@ class Store:
         with self._conn() as c:
             return c.execute(
                 "SELECT headline, main_entities, event_type FROM published"
-                " WHERE cs_top10_date IS NOT NULL AND cs_top10_date<>''"
+                # 실제 날짜(YYYY-MM-DD)만 센다. 중복으로 지운 글에 찍는
+                # 'DELETED-DUP' 같은 표식까지 세면 "이전 Top10 에 실렸다"로
+                # 오인해 멀쩡한 후보를 떨군다(2026-10-05: 10/5 분이 0건이 됐다).
+                " WHERE cs_top10_date LIKE '____-__-__'"
                 "   AND sent_at > ?", (since_ts,)).fetchall()
 
     def mark_briefed(self, keys: list, date_str: str):
