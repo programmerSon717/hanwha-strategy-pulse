@@ -17,6 +17,28 @@ if [[ -z "$(git status --porcelain botstate.sqlite3)" ]]; then
   exit 0
 fi
 
+# **코드가 미커밋이면 손대지 않는다.** 아래 루프는 git reset --hard 를
+# 쓴다 — 상태 DB 만 바꿔 올리는 것이 목적이고 코드는 원격이 진실이라는
+# 전제다. 사람이 로컬에서 고치던 중에 이걸 돌리면 그 수정이 날아간다.
+_dirty="$(git status --porcelain -- . ':(exclude)botstate.sqlite3')"
+if [ -n "$_dirty" ]; then
+  echo "  [상태] ✗ 커밋되지 않은 코드 변경이 있습니다 — 중단합니다"
+  echo "$_dirty"
+  echo "  먼저 커밋하거나 되돌린 뒤 다시 실행하세요."
+  exit 1
+fi
+# **푸시되지 않은 커밋도 막는다.** 미커밋 변경만 막았더니, 커밋은 했으나
+# 아직 올리지 않은 수정이 reset --hard 로 날아갔다 — 이 가드를 넣은
+# 커밋 자신이 그렇게 사라졌다(2026-10-05). reflog 로 되찾았다.
+git fetch -q origin main || true
+_ahead="$(git rev-list --count origin/main..HEAD -- . ':(exclude)botstate.sqlite3' 2>/dev/null || echo 0)"
+if [ "${_ahead:-0}" != "0" ]; then
+  echo "  [상태] ✗ 올리지 않은 코드 커밋이 ${_ahead}개 있습니다 — 중단합니다"
+  git log --oneline origin/main..HEAD -- . ':(exclude)botstate.sqlite3'
+  echo "  먼저 git push 한 뒤 다시 실행하세요."
+  exit 1
+fi
+
 TMP="$(mktemp -t state.XXXXXX.sqlite3)"
 for i in 1 2 3 4 5; do
   cp -f botstate.sqlite3 "$TMP"
@@ -25,7 +47,25 @@ for i in 1 2 3 4 5; do
   # 사람이 방금 올린 수정을 되돌린다(2026-10-05 감사).
   git reset -q --hard origin/main || true
   cp -f "$TMP" botstate.sqlite3
-  python tools/merge_state.py origin/main || true
+  # **인터프리터를 찾아 쓴다.** `python` 을 박아 두었더니 로컬 zsh 에는
+  # 그 이름이 없어 "command not found" 로 떨어졌고, `|| true` 가 그걸
+  # 삼켜 **병합 없이** 로컬 DB 를 그대로 커밋했다. 원격 회차의 수집분이
+  # 통째로 사라졌다(2026-10-05 실측: seen 19건·published 1건 유실).
+  # 병합은 이 스크립트의 존재 이유이므로, 실패하면 **푸시하지 않는다.**
+  PY=""
+  for cand in ./venv/bin/python ./venv/bin/python3 python3 python; do
+    if command -v "$cand" >/dev/null 2>&1; then PY="$cand"; break; fi
+  done
+  if [ -z "$PY" ]; then
+    echo "  [상태] ✗ 파이썬을 찾지 못했습니다 — 병합 없이는 푸시하지 않습니다"
+    cp -f "$TMP" botstate.sqlite3
+    exit 1
+  fi
+  if ! "$PY" tools/merge_state.py origin/main; then
+    echo "  [상태] ✗ 병합 실패 — 원격 기록이 사라질 수 있어 푸시를 중단합니다"
+    cp -f "$TMP" botstate.sqlite3
+    exit 1
+  fi
   git add botstate.sqlite3 || true
   if git diff --cached --quiet; then
     echo "  [상태] 합친 뒤 변경 없음 — 생략"
