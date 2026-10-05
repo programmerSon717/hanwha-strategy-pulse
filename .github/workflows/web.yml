@@ -15,6 +15,15 @@ on:
   schedule:
     - cron: '7,37 * * * *'      # 30분마다. 봇 크론(정각 부근)과 겹치지 않게 비켜 둔다.
   workflow_dispatch:
+  push:
+    # **화면 파일을 고쳤을 때만** 돈다. 봇이 올리는 상태 커밋
+    # (botstate.sqlite3)에는 반응하지 않는다 — 그러면 5분마다 배포가 돌아
+    # 러너를 쓸데없이 먹는다.
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'tools/export_web.py'
+      - '.github/workflows/web.yml'
 
 # Pages 배포에 필요한 최소 권한. contents 는 읽기만 — 쓰기를 주지 않는 것이
 # "커밋하지 않는다" 를 구조로 보장한다.
