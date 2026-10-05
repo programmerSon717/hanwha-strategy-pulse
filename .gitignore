@@ -1,0 +1,42 @@
+# 절대 커밋 금지 — 실제 토큰/API 키가 들어 있음
+.env
+
+# 개인 텔레그램 계정 접근 권한 = 비밀번호급
+*.session
+*.session-journal
+
+# 봇 id, chat_id, 계정명 등 공개 리포에 둘 이유가 없는 식별 정보
+HANDOFF.local.md
+
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# 크립토 봇에서 물려받은 자격증명 — 절대 커밋 금지
+.env.*
+!.env.example
+*.DANGEROUS
+# 크립토 봇 시절 원본 백업
+*.crypto.bak
+
+# 2026-10-01 BSP 전환 중 만든 로컬 백업 — 커밋하지 않는다
+*.bak.20261001
+botstate.sqlite3.bak.*
+
+# 연결 정보(봇 id·chat_id·계정명)는 로컬 전용. 이름이 어떻게 바뀌어도 막는다.
+HANDOFF.local*
+# 크립토 봇 시절 원본 백업 — .md 확장자가 붙은 것까지 전부
+*.crypto.bak.md
+# 크립토 시절 DB 원본 — 커밋하지 않는다
+botstate.sqlite3.crypto-era.bak
+
+# A팀 실제 공유 기사 샘플 — 동료 실명이 들어 있다. 커밋 금지.
+groundtruth/
+
+# 상태판 — 공개 저장소에 둘 이유가 없다. 수집한 기사 제목과 커밋 제목이
+# 그대로 쌓여 대상이 드러난다(2026-10-05). 로컬에서만 만든다.
+docs/
+
+# 옛 설정 백업 — 지난 값이 남아 있다
+config.py.bak*

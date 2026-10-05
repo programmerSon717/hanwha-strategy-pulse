@@ -1,0 +1,1079 @@
+"""📌 A팀 Top10 — 매일 KST 06:55.
+
+☀️ Morning Brief(07:00)와 **선정 기준이 다르다.**
+  Morning Brief : 모델이 매긴 strategic_score 순 + 추천 서칭 순서 티어
+  A팀 Top10  : csfit.score() — A팀이 실제 공유한 125건의 주제 분포 가중치
+
+같은 기사가 양쪽에 다 나올 수 있다. 둘 다 Aggregation Topic 이라 중복 허용이다.
+"""
+import html
+import re
+from datetime import datetime, timedelta, timezone
+
+import brief
+import csfit
+import events
+import gnews
+import shared
+import telegraph
+import topics
+from config import settings
+
+KST = timezone(timedelta(hours=9))
+
+# brief_candidates 컬럼 순서
+K_KEY, K_HEAD, K_URL, K_PRI, K_SEC, K_SCORE = 0, 1, 2, 3, 4, 5
+K_ISKEY, K_CLUSTER, K_ENT, K_LEDE, K_WHY, K_SENT = 6, 7, 8, 9, 10, 11
+K_ETYPE, K_ORIGIN, K_TEXT = 12, 13, 14   # origin_at=기사 발행시각, text=발행 원문
+
+# 홍보성 기사를 다시 실을 수 있게 되기까지의 간격 (2026-10-01 사용자 지정: 이틀)
+PR_INTERVAL_SEC = 2 * 24 * 3600
+
+
+def due(store, now: float | None = None) -> tuple[bool, str]:
+    """지금 발행해야 하는가. (해야하나, 이유)
+
+    **GitHub 의 schedule 에 기대지 않기 위해 있다.** 2026-10-02 06:55 에
+    cstop10.yml 의 cron(21:55 UTC)이 아예 발화하지 않아 그날 Top10 이 누락됐다.
+    실행 이력 0건. 리포 문서에도 적혀 있듯 GitHub 무료 티어의 예약 실행은
+    best-effort 다(간격 중앙값 42분, 최대 11시간). 하루 한 번짜리는 통째로
+    건너뛸 수 있다.
+
+    그래서 **상시 도는 bot.yml 루프**가 매 회차 이것을 물어보고 띄운다.
+    cron 워크플로는 백업으로 남겨 둔다 — 둘 다 와도 여기서 한 번만 나간다.
+    """
+    now = now or datetime.now(KST).timestamp()
+    t = datetime.fromtimestamp(now, KST)
+    hh, _, mm = settings.cs_top10_time.partition(":")
+    sched = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    day0 = t.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    day1 = day0 + 24 * 3600
+
+    if t < sched:
+        return False, f"아직 {settings.cs_top10_time} 전"
+    if store.agg_ran_on("cs_top10", day0, day1):
+        return False, "오늘 이미 발행함"
+    return True, "발행 시각 지남 · 오늘 미발행"
+
+
+def window(now: float | None = None) -> tuple[float, float, str]:
+    """후보를 뽑을 구간. 기본은 '하루 전 같은 시각 ~ 지금'.
+
+    길이는 settings.cs_top10_window_hours 가 정한다. 봇이 며칠 멈췄다 살아난
+    날은 24시간 창에 후보가 모자라 Top10 이 성립하지 않는다 — 그 설명은
+    config.cs_top10_window_hours 주석에 있다.
+    """
+    now = now or datetime.now(KST).timestamp()
+    until = now
+    since = now - settings.cs_top10_window_hours * 3600
+    label = datetime.fromtimestamp(now, KST).strftime("%Y.%m.%d %a")
+    return since, until, label
+
+
+def _stem_hits(ta: set, tb: set, minlen: int = 2, prefix: int = 3) -> int:
+    """어간이 겹치는 낱말 수.
+
+    **한국어 복합어는 앞부분이 같아도 서로의 접두사가 아니다.**
+    "애큐온캐피탈" 과 "애큐온저축은행" 은 어느 쪽도 다른 쪽으로 시작하지 않아
+    접두사 비교로는 안 걸렸고, 같은 딜 기사 두 건이 Top10 에 나란히 실렸다
+    (2026-10-02). 앞 3글자가 같으면 같은 낱말로 본다.
+
+    조사 때문에 정확히 일치하는 비교도 안 된다 — "자본확충" vs "자본확충으로".
+    그래서 접두사 포함도 함께 본다.
+    """
+    n = 0
+    for x in ta:
+        if len(x) < minlen:
+            continue
+        for y in tb:
+            if len(y) < minlen:
+                continue
+            if (x == y or x.startswith(y) or y.startswith(x)
+                    or (len(x) >= prefix and len(y) >= prefix
+                        and x[:prefix] == y[:prefix])):
+                n += 1
+                break
+    return n
+
+
+def _stem_overlap(ta: set, tb: set, minlen: int = 2) -> bool:
+    return _stem_hits(ta, tb, minlen) > 0
+
+
+def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
+          strict: bool = False) -> bool:
+    """두 기사가 같은 사건인가. **신호를 합산해서** 판정한다.
+
+    저장된 cluster_id 를 믿으면 안 된다 — 모델이 main_entities 를 기사마다
+    다르게 적어 fingerprint 가 갈린다. 애큐온캐피탈 인수 한 건이 실제로
+    5가지 cluster_id 로 저장돼 Top10 에 3건이 나란히 실렸다(2026-10-02).
+
+    제목 유사도 단독으로도 안 된다. 같은 딜을 다룬 기사들의 Jaccard 가
+    0.13~0.14 로 나와 events.SOFT_TITLE_SIMILARITY(0.25)에도 못 미쳤다.
+    매체마다 제목을 전혀 다르게 뽑기 때문이다.
+
+    그래서 네 신호를 합산한다. 엔티티가 하나도 안 겹치면 무조건 다른 사건이다.
+        엔티티 2개 이상 겹침  +2      엔티티 1개 겹침       +1
+        action 그룹 같음      +1      제목 유사도 0.25 이상 +1
+        회사명 말고 겹치는 낱말이 있음  +1
+    합이 3 이상이면 같은 사건으로 본다.
+
+    틀렸을 때의 대가가 비대칭이라 이 정도로 과감하게 잡는다 — 잘못 묶으면
+    Top10 에서 기사 하나가 빠질 뿐이고, 못 묶으면 같은 뉴스가 3~4건 실린다.
+    """
+    def ents_of(ents, title):
+        return events._entity_set(
+            {"main_entities": [e for e in (ents or "").split(",") if e]}, title)
+
+    ea, eb = ents_of(a_ents, a_title), ents_of(b_ents, b_title)
+    inter = ea & eb
+    if not inter:
+        return False
+
+    score = 2 if len(inter) >= 2 else 1
+
+    ga = events.ACTION_GROUPS.get(a_type or "other", "other")
+    gb = events.ACTION_GROUPS.get(b_type or "other", "other")
+    if ga == gb:
+        score += 1
+
+    if events.similarity(a_title, b_title) >= events.SOFT_TITLE_SIMILARITY:
+        score += 1
+
+    # 회사명을 뺀 낱말이 몇 개나 겹치는가 (인수 · 자본확충 · 애큐온 …)
+    ta, tb = events._tokens(a_title), events._tokens(b_title)
+    # **교집합에 든 회사명만 뺀다.** 그건 이미 엔티티 신호로 세었다.
+    # 전부 빼면 "애큐온캐피탈" 과 "애큐온저축은행" 같은 **서로 다른** 회사명이
+    # 사라져 어간 비교 기회를 잃는다. 같은 딜의 두 기사가 그렇게 갈렸다.
+    names = {events._norm(x) for x in inter}
+    hits = _stem_hits(ta - names, tb - names)
+    score += 2 if hits >= 2 else (1 if hits else 0)
+
+    if strict:
+        # **과거 14일치 전체와 비교할 때 쓰는 엄격 모드.**
+        #
+        # 기본 모드는 '하루치 후보 풀 안에서' 비교하라고 만든 것이라 과감하다
+        # (docstring 의 비대칭 논리). 그걸 2주치 전체에 그대로 대면 회사명만
+        # 같으면 걸린다 — "카카오뱅크 글로벌 디지털자산 확장" 이 2주 전
+        # "카카오뱅크 개인사업자 대출 4조" 와 같은 사건으로 묶여 10/5 Top10 이
+        # 0건이 됐다(2026-10-05).
+        #
+        # 그래서 **회사명 말고 겹치는 낱말**을 반드시 요구한다. 애큐온 인수
+        # 반복 보도는 '애큐온'·'인수' 가 공통으로 남아 걸리고, 같은 회사의
+        # 다른 사건은 걸리지 않는다.
+        #
+        # hits 1 로는 모자랐다. "카카오뱅크 글로벌 디지털자산 확장" 이 2주 전
+        # "카카오뱅크 개인사업자 대출" 과 낱말 하나로 묶였다. 2개를 요구하면
+        # 애큐온 반복 보도('애큐온'+'인수')는 그대로 걸리고 오탐은 빠진다.
+        return score >= 3 and hits >= 2
+
+    return score >= 3
+
+
+# 추천 서칭 순서를 **가산점**으로 반영한다.
+#
+# 처음엔 티어를 절대 1차 정렬키로 뒀다. 그랬더니 69점짜리 규제 기사
+# ("보험사 GA 관리 평가 지표…K-ICS 반영")가 45점짜리 T2 기사 뒤로 밀려
+# Top10 에서 아예 빠졌다. 추천 순서는 **어디부터 찾아볼지**의 우선순위지
+# 품질 판단을 뒤집으라는 뜻이 아니다(2026-10-02).
+# 가산점이면 티어가 낮아도 내용이 좋으면 올라온다.
+TIER_BONUS = {1: 25, 2: 15, 3: 10, 4: 5, 5: 0}
+
+
+def tier_of(r) -> int:
+    """추천 서칭 순서상의 티어. **한화 여부는 제목으로 판단한다.**
+
+        1 한화그룹 관련          2 진행중인 M&A · 보험
+        3 규제 · 지배구조        4 한화 금융계열사(곁다리 언급)
+        5 기타 (네이버 · 카카오 · 토스 · 메리츠 등)
+
+    brief.tier 는 entities 로 판단한다. Morning Brief 에서는 그게 맞다 —
+    사용자가 "한화면 무조건 1순위"로 확정했다. 다만 Top10 에 그대로 쓰면
+    모델이 main_entities 에 한화생명을 폭넓게 적는 탓에 "퇴직연금 기금화"
+    같은 기사까지 T1 이 돼 10건 중 7건이 1티어로 몰린다. 티어가 아무것도
+    가르지 못한다. 그래서 여기서는 **기사의 핵심이 한화인지**를 제목으로 본다.
+    """
+    title = r[K_HEAD] or ""
+    ents = r[K_ENT] or ""
+    etype = r[K_ETYPE] if len(r) > K_ETYPE else ""
+    pri = r[K_PRI] or ""
+
+    if csfit.primary_category(title) == "한화":
+        return 1
+    if pri == "ma_governance" or etype in events.ACTION_GROUPS and \
+            events.ACTION_GROUPS.get(etype) == "deal":
+        return 2
+    if pri == "insurance_finance":
+        return 2
+    if pri == "regulation_policy":
+        return 3
+    if "한화" in ents:
+        return 4
+    return 5
+
+
+def _acceptable(r, picked: list) -> bool:
+    """대체까지 끝난 기사를 최종적으로 받아들일 수 있는가.
+
+    **대체 뒤에 다시 봐야 한다.** 유료기사를 같은 사건의 다른 매체 기사로
+    갈아타고 나면 그 기사가 이미 뽑힌 것과 같은 사건일 수도, A팀이 이미
+    공유한 것일 수도 있다. 갈아타기 전에만 검사해서 한화투자증권 종투사 건이
+    두 번 실렸다(2026-10-02).
+    """
+    if shared.already_shared(r[K_HEAD] or ""):
+        return False
+    return not any(
+        _same(r[K_HEAD] or "", r[K_ENT] or "",
+              r[K_ETYPE] if len(r) > K_ETYPE else "",
+              q[K_HEAD] or "", q[K_ENT] or "",
+              q[K_ETYPE] if len(q) > K_ETYPE else "")
+        for _, q in picked)
+
+
+def _fetchable(group: list, store) -> tuple | None:
+    """묶음에서 **전문을 가져올 수 있는** 기사를 고른다.
+
+    유료기사는 Instant View 에 전문을 실을 수 없다. 같은 사건을 다룬 다른
+    매체 기사가 묶음 안에 있으면 그걸 쓰고, 없으면 None 을 돌려준다
+    (호출부가 그 사건을 통째로 건너뛴다). 2026-10-02 사용자 지정.
+
+    점수가 높은 순으로 보되, 유료 도메인은 네트워크를 타지 않고 바로 거른다.
+    """
+    for sc, r in sorted(group, key=lambda x: -x[0]):
+        url = gnews.resolve(r[K_URL] or "", store)
+        if telegraph.is_paywalled(url):
+            continue
+        paras, why = telegraph.fetch_article(url, title=r[K_HEAD] or "")
+        if not why:
+            return sc, r
+    return None
+
+
+def select(rows: list, count: int | None = None, store=None,
+           now: float | None = None) -> list:
+    """적합도 순 Top N.
+
+    같은 사건은 **한 건만** 싣는다. 저장된 cluster_id 로 1차로 묶고,
+    그것만으로는 갈리는 건들을 _same() 으로 2차로 묶는다.
+
+    홍보성 기사는 이틀에 한 건, 가장 큰 것 하나만 넣는다.
+    """
+    import time
+    count = count or settings.daily_brief_count
+    now = now or time.time()
+
+    # 1차: 저장된 cluster_id
+    best: dict[str, tuple] = {}
+    for r in rows:
+        cid = r[K_CLUSTER] or f"_solo:{r[K_KEY]}"
+        sc = (csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
+                          r[K_PRI] or "", r[K_SCORE])[0]
+              + csfit.risk_bonus(r[K_HEAD] or ""))
+        cur = best.get(cid)
+        if cur is None or sc > cur[0]:
+            best[cid] = (sc, r)
+
+    # 2차: 실제 값으로 같은 사건 재판정. 점수 높은 쪽을 남긴다.
+    # **같은 사건 묶음의 멤버를 전부 들고 있는다.**
+    # 대표가 유료기사면 같은 사건을 다룬 다른 매체 기사로 갈아타야 한다.
+    # 예전엔 대표 하나만 남기고 버려서 대체할 후보가 없었다(2026-10-02).
+    merged: list = []
+    groups: dict[int, list] = {}
+    for sc, r in sorted(best.values(), key=lambda x: -x[0]):
+        dup = -1
+        for i, (sc2, r2) in enumerate(merged):
+            if _same(r[K_HEAD] or "", r[K_ENT] or "", r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     r2[K_HEAD] or "", r2[K_ENT] or "",
+                     r2[K_ETYPE] if len(r2) > K_ETYPE else ""):
+                dup = i
+                break
+        if dup >= 0:
+            groups[dup].append((sc, r))
+        else:
+            groups[len(merged)] = [(sc, r)]
+            merged.append((sc, r))
+
+    dropped = len(best) - len(merged)
+    if dropped:
+        print(f"[cstop10] 같은 사건 {dropped}건 접음")
+
+    # 3차: 최근 Top10 에 이미 실린 사건 제외
+    if store is not None:
+        recent = store.cstop10_recent_clusters(now - 7 * 24 * 3600)
+        if recent:
+            keep = []
+            for sc, r in merged:
+                hit = any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                                r[K_ETYPE] if len(r) > K_ETYPE else "",
+                                h or "", e or "", t or "")
+                          for h, e, t in recent)
+                if hit:
+                    print(f"[cstop10] 기게재 사건 제외: {(r[K_HEAD] or '')[:40]}")
+                else:
+                    keep.append((sc, r))
+            merged = keep
+
+    # 3.5차: **창 시작 전에 이미 일반 탭으로 나간 사건**은 뺀다.
+    #
+    # 3차는 '이전 Top10 에 실렸던 것'만 본다. 그런데 애큐온 인수 건처럼 일반
+    # 탭에는 여러 번 나갔지만 Top10 에는 안 실린 사건이 있다. 팀은 이미 그
+    # 사건을 봤는데 Top10 에서 또 보게 된다(2026-10-05 지적).
+    #
+    # 창 **안**에서 발행된 것은 빼지 않는다 — 그건 오늘 처음 전한 뉴스이고,
+    # Top10 은 원래 그중에서 고르는 물건이다. 창 **밖**(그 전)에 나간 것만 뺀다.
+    if store is not None:
+        since, _until, _lab = window(now)
+        prior = store.published_clusters_before(since)
+        if prior:
+            keep = []
+            for sc, r in merged:
+                hit = any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                                r[K_ETYPE] if len(r) > K_ETYPE else "",
+                                h or "", e or "", t or "", strict=True)
+                          for h, e, t in prior)
+                if hit:
+                    print(f"[cstop10] 일반탭 기발행 사건 제외: {(r[K_HEAD] or '')[:38]}")
+                else:
+                    keep.append((sc, r))
+            merged = keep
+
+    # 3.7차: **다른 날짜 Top10 에 이미 실린 '그 기사' 는 뺀다.**
+    #
+    # _same() 은 엔티티가 비면 무조건 다른 사건으로 본다. 그래서 엔티티가 빈
+    # 행(뱅크샐러드)이 10/4·10/5 양쪽에 실렸다. URL 문자열 비교도 통하지
+    # 않는다 — 봇은 구글뉴스 리디렉터를, 큐레이션 행은 풀린 원문을 저장한다.
+    # 기사 번호로 맞추면 그 둘을 다 피해 간다(store.top10_article_keys).
+    if store is not None:
+        used_keys = store.top10_article_keys()
+        if used_keys:
+            keep = []
+            for sc, r in merged:
+                k = article_key(gnews.resolve(r[K_URL] or "", store))
+                if k and k in used_keys:
+                    print(f"[cstop10] 타 날짜 Top10 기게재 제외: {(r[K_HEAD] or '')[:36]}")
+                else:
+                    keep.append((sc, r))
+            merged = keep
+
+    # A팀이 이미 공유한 건은 뺀다.
+    # 담당자들이 아침에 올린 것을 봇이 또 올리면 중복이다. 비교는 제목 기준이다 —
+    # 같은 사건을 다른 매체가 쓰면 URL 이 전혀 다르다(2026-10-02 사용자 지정).
+    before = len(merged)
+    kept = []
+    for sc, r in merged:
+        hit = shared.already_shared(r[K_HEAD] or "")
+        if hit:
+            print(f"[cstop10] A팀 기공유 제외: {(r[K_HEAD] or '')[:34]}")
+        else:
+            kept.append((sc, r))
+    merged = kept
+
+    # 경영 판단에 쓸 데 없는 체인 기술·시세 기사는 뺀다 (사용자 지정).
+    before = len(merged)
+    merged = [(sc, r) for sc, r in merged
+              if not csfit.is_crypto_tech(r[K_HEAD] or "")]
+    if before != len(merged):
+        print(f"[cstop10] 크립토 기술·시세 {before - len(merged)}건 제외")
+
+    # **1차 정렬키는 사용자가 지정한 추천 서칭 순서다.**
+    #   1 한화  2 M&A·보험  3 규제·지배구조  4 한화 곁다리  5 기타
+    # 125건 실측 가중치(csfit)는 **같은 티어 안에서의** 2차 정렬키다.
+    # 기준의 위계가 그렇다 — 추천 순서가 틀이고, 125건은 그 안에서 담당자들이
+    # 실제로 무엇을 골랐는지 보여주는 성향이다(2026-10-02 사용자 설명).
+    def rank_key(x):
+        return -(x[0] + TIER_BONUS.get(tier_of(x[1]), 0))
+
+    # 순위를 매긴 뒤에도 묶음을 찾을 수 있게 원래 index 를 들고 다닌다.
+    idx_of = {id(r): i for i, (_, r) in enumerate(merged)}
+    ranked = sorted(merged, key=rank_key)
+
+    pr = [(sc, r) for sc, r in ranked if csfit.is_pr(r[K_HEAD] or "")]
+    normal = [(sc, r) for sc, r in ranked if not csfit.is_pr(r[K_HEAD] or "")]
+
+    allow_pr = True
+    if store is not None:
+        last = store.last_pr_pick()
+        if last and (now - last) < PR_INTERVAL_SEC:
+            allow_pr = False
+    pr_pick = pr[:1] if (allow_pr and pr) else []
+    if pr and not allow_pr:
+        print(f"[cstop10] 홍보성 {len(pr)}건 보류 — 직전 게재 후 이틀 미경과")
+
+    cap = settings.daily_brief_max_per_entity
+    used: dict[str, int] = {}
+    cat_used: dict[str, int] = {}
+    picked, deferred = [], []
+
+    # 최소 보장석을 **먼저** 채운다. 점수 경쟁에 맡기면 영영 못 들어온다.
+    reserved_keys = set()
+    for catg, floor in csfit.CATEGORY_FLOOR.items():
+        got = 0
+        for sc, r in normal:
+            if got >= floor:
+                break
+            if sc < csfit.FLOOR_MIN_SCORE:
+                continue
+            if csfit.primary_category(r[K_HEAD] or "") != catg:
+                continue
+            if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                         r[K_ETYPE] if len(r) > K_ETYPE else "",
+                         q[K_HEAD] or "", q[K_ENT] or "",
+                         q[K_ETYPE] if len(q) > K_ETYPE else "")
+                   for _, q in picked):
+                continue
+            got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
+            if got_alt is None or not _acceptable(got_alt[1], picked):
+                continue
+            sc, r = got_alt
+            picked.append((sc, r))
+            reserved_keys.add(r[K_KEY])
+            cat_used[catg] = cat_used.get(catg, 0) + 1
+            ents = [e for e in (r[K_ENT] or "").split(",") if e]
+            h = ents[0] if ents else (r[K_PRI] or "_")
+            used[h] = used.get(h, 0) + 1
+            got += 1
+            print(f"[cstop10] {catg} 보장석: {(r[K_HEAD] or '')[:40]}")
+
+    for sc, r in pr_pick + normal:
+        if r[K_KEY] in reserved_keys:
+            continue
+        ents = [e for e in (r[K_ENT] or "").split(",") if e]
+        head = ents[0] if ents else (r[K_PRI] or "_")
+        # 범주 상한 — 125건 실측 분포에 맞춘다. 안 걸면 국내 보험·GA 가 독식한다.
+        catg = csfit.primary_category(r[K_HEAD] or "", r[K_ENT] or "")
+        ccap = csfit.CATEGORY_CAP.get(catg, 2)
+        if cat_used.get(catg, 0) >= ccap:
+            deferred.append((sc, r))
+            continue
+        if used.get(head, 0) >= cap:
+            deferred.append((sc, r))
+            continue
+        # **최종 안전장치 — 이미 뽑은 것과 같은 사건이면 넣지 않는다.**
+        # 앞 단계에서 접었더라도 보장석·deferred 경로로 들어올 수 있다.
+        # 10건은 서로 다른 사건이어야 한다(2026-10-02 사용자 지정).
+        if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                     r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     q[K_HEAD] or "", q[K_ENT] or "",
+                     q[K_ETYPE] if len(q) > K_ETYPE else "")
+               for _, q in picked):
+            continue
+        # **유료기사면 같은 사건의 다른 매체 기사로 갈아탄다.**
+        # 전문을 Instant View 에 실을 수 없는 기사는 올리지 않는다. 대체할
+        # 기사가 묶음에 없으면 그 사건을 통째로 건너뛴다(2026-10-02 사용자 지정).
+        got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
+        if got_alt is None:
+            print(f"[cstop10] 전문 확보 불가 — 건너뜀: {(r[K_HEAD] or '')[:34]}")
+            continue
+        if not _acceptable(got_alt[1], picked):
+            continue
+        sc, r = got_alt
+
+        cat_used[catg] = cat_used.get(catg, 0) + 1
+        used[head] = used.get(head, 0) + 1
+        picked.append((sc, r))
+        if len(picked) >= count:
+            break
+    for sc, r in deferred:
+        if len(picked) >= count:
+            break
+        if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                     r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     q[K_HEAD] or "", q[K_ENT] or "",
+                     q[K_ETYPE] if len(q) > K_ETYPE else "")
+               for _, q in picked):
+            continue
+        got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
+        if got_alt is None or not _acceptable(got_alt[1], picked):
+            continue
+        picked.append(got_alt)
+
+    # 최종 배열도 추천 순서를 따른다. 홍보성은 맨 아래.
+    picked.sort(key=lambda x: (csfit.is_pr(x[1][K_HEAD] or ""), rank_key(x)))
+    return picked
+
+
+TG_LIMIT = 4096          # 텔레그램 한 메시지 상한. **보이는 텍스트** 기준이다
+SAFE_LIMIT = 4060        # 여유분 36자. visible_len 이 정확해 더 줄일 이유가 없다
+
+# 기사와 기사 사이. 섹션 사이가 한 줄이라 기사 경계는 더 벌려야 구분된다.
+ITEM_GAP = "\n\n━━━━━\n\n"
+
+
+def visible_len(s: str) -> int:
+    """텔레그램이 세는 길이 — HTML 태그는 빼고 센다."""
+    return len(html.unescape(re.sub(r"<[^>]+>", "", s)))
+
+
+def _sections(text: str) -> dict:
+    """발행 원문에서 섹션을 뜯어낸다. 없으면 빈 값."""
+    out = {"lede": "", "bullets": [], "why": "", "when": "", "source": ""}
+    if not text:
+        return out
+    m = re.search(r"✅ <b>핵심</b>\n(.+?)(?:\n\n|$)", text, re.S)
+    if m: out["lede"] = m.group(1).strip()
+    m = re.search(r"<blockquote>(.*?)</blockquote>", text, re.S)
+    if m:
+        out["bullets"] = [b.strip(" •").strip()
+                          for b in m.group(1).split("\n") if b.strip()]
+    m = re.search(r"(?:🐧|💡 <b>Why it matters</b>\n)\s*(.+?)(?:\n\n|$)", text, re.S)
+    if m: out["why"] = m.group(1).strip()
+    m = re.search(r"🕒 (.+?)(?:\n|$)", text)
+    if m: out["when"] = m.group(1).strip()
+    m = re.search(r"</a>\s*-\s*(.+?)(?:\n|$)", text)
+    if m:
+        src = m.group(1).strip()
+        # "한화 금융계열사(비즈니스포스트)" 처럼 내부 수집기 이름이 앞에 붙는다.
+        # 독자에게 필요한 건 매체명뿐이다.
+        mm = re.match(r"^.+?\((.+)\)$", src)
+        out["source"] = (mm.group(1) if mm else src).strip()
+    return out
+
+
+def _ts(v) -> float | None:
+    """epoch 로 쓸 수 있는 값이면 float, 아니면 None. DB 에 TEXT 로 들어온 행이 있다."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
+def _cut(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+
+def _posted_label(r) -> str:
+    """기사 **원문 입력시각** 라벨. 없으면 빈 문자열.
+
+    발행(sent_at)이 아니라 origin_at 이다 — 봇이 언제 내보냈는지가 아니라
+    매체가 언제 쓴 기사인지를 보여줘야 한다(2026-10-05 지적).
+    """
+    ts = r[K_ORIGIN] if len(r) > K_ORIGIN else None
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return ""
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts, KST).strftime("%Y-%m-%d %H:%M KST")
+
+
+def _iv_url(r, real_url: str, store) -> str | None:
+    """이 기사의 telegra.ph 페이지 주소. 없으면 만든다.
+
+    제목을 여기로 링크하면 **눌렀을 때 텔레그램 안에서 Instant View 로 열린다.**
+    원래 기사 주소로 링크하면 매체마다 복불복이다 — IV 템플릿이 등록된
+    도메인만 되고(글로벌이코노믹 ○), 아닌 곳은 "Open this link?" 가 뜨면서
+    브라우저로 나간다(newsis AMP ×). telegra.ph 는 항상 된다.
+    """
+    if store is None:
+        return None
+    key = r[K_KEY]
+    hit = store.get_iv_url(key)
+    if hit:
+        return hit
+
+    body = (r[K_TEXT] or "") if len(r) > K_TEXT else ""
+    bullets = []
+    m = re.search(r"<blockquote>(.*?)</blockquote>", body, re.S)
+    if m:
+        bullets = [html.unescape(re.sub(r"<[^>]+>", "", b)).strip(" •").strip()
+                   for b in m.group(1).split("\n") if b.strip()]
+    src_name = ""
+    m = re.search(r"</a>\s*-\s*(.+?)(?:\n|$)", body)
+    if m:
+        nm = html.unescape(m.group(1)).strip()
+        mm = re.match(r"^.+?\((.+)\)$", nm)
+        src_name = (mm.group(1) if mm else nm).strip()
+
+    # **페이지는 언제나 만든다 — 제목은 반드시 Instant View 로 열려야 한다.**
+    # 절대 규칙이다(2026-10-02). 본문을 못 가져왔다고 페이지를 안 만들면
+    # 그 기사만 브라우저로 튕겨 나간다.
+    # 본문이 없으면(유료기사·추출실패) 긁어온 척하지 않고, 우리가 가진
+    # 핵심·주요 내용으로 채우고 왜 전문이 없는지 밝힌 뒤 원문으로 보낸다.
+    paras, why_fail = telegraph.fetch_article(real_url,
+                                              title=r[K_HEAD] or "")
+    note = ""
+    if why_fail:
+        note = (telegraph.NOTE_PAYWALL
+                if ("유료" in why_fail or "페이월" in why_fail)
+                else telegraph.NOTE_FAILED)
+        print(f"[cstop10] 본문 없음({why_fail}) — 요약으로 IV 구성: "
+              f"{(r[K_HEAD] or '')[:32]}")
+
+    content = telegraph.build_content(
+        summary=(r[K_LEDE] or "").strip(),
+        bullets=bullets,
+        why=(r[K_WHY] or "").strip(),
+        excerpt=paras,
+        source_url=real_url,
+        source_name=src_name,
+        note=note,
+        posted_label=_posted_label(r),
+    )
+    # 바이라인에도 입력시각을 넣는다 — IV 머리의 날짜는 페이지 생성 시각이라
+    # 바꿀 수 없다(telegraph.build_content 주석). 바이라인은 우리가 정한다.
+    # 바이라인에도 입력시각을 적는다. telegra.ph 가 그 뒤에 자기 생성시각(UTC)을
+    # 붙이는데 지울 수 없어서, **바로 앞에 진짜 시각을 놓아** 먼저 읽히게 한다.
+    _pl = _posted_label(r)
+    _author = (f"{src_name} · 기사발행 {_pl}" if (src_name and _pl)
+               else (src_name or settings.bot_name))
+    url = telegraph.create_page(store, r[K_HEAD] or "", content,
+                                author=_author)
+    if url:
+        store.put_iv_url(key, url)
+    return url
+
+
+def _link_headline(body: str, url: str) -> str:
+    """제목 줄을 눌러 기사로 갈 수 있게 링크로 감싼다.
+
+    원문의 제목 줄은 `🏢 <b>제목</b>` 형태라 눌러도 아무 일이 없다. 링크는
+    맨 아래 "기사 원문" 에만 있어서 Top10 처럼 여러 건이 이어진 글에서는
+    제목에서 바로 넘어가는 게 자연스럽다(2026-10-02 사용자 지정).
+
+    이미 <a> 로 감싸여 있으면 건드리지 않는다.
+    """
+    if not url:
+        return body
+    lines = body.split("\n")
+    for i, ln in enumerate(lines):
+        if "<a " in ln:
+            break
+        m = re.match(r"^(\S+)\s+<b>(.+)</b>\s*$", ln)
+        if m:
+            icon, title = m.group(1), m.group(2)
+            lines[i] = f'{icon} <a href="{html.escape(url, quote=True)}"><b>{title}</b></a>'
+            break
+    return "\n".join(lines)
+
+
+def render_item(r, url: str | None = None, iv: str | None = None,
+                **_ignored) -> str:
+    """기사 1건. **발행 당시 원문을 그대로 쓴다.**
+
+    원문(published.text)에는 ✅ 핵심 · 📂 주요 내용(불릿) · 🐧 · 🕒 · 기사 원문 ·
+    해시태그가 이미 완성된 형태로 들어 있다. 실시간 탭에 나간 바로 그 글이다.
+
+    **다시 조립하지 않는다.** 두 번 데였다.
+      1) 섹션을 뜯어 재조립하면서 html.escape 를 한 번 더 걸었다. 원문은 이미
+         이스케이프돼 있어서 `&#x27;` 가 화면에 그대로 찍혔다(2026-10-02).
+      2) 한 메시지에 맞추려고 불릿을 2개로 깎고 문장에 상한을 걸었더니
+         내용 품질이 눈에 띄게 떨어졌다.
+
+    여기서는 맨 윗줄(봇 이름)만 떼고 카테고리 줄로 바꿔 끼운다. 그뿐이다.
+    길이가 넘치면 render_all 이 **메시지를 나눈다** — 내용을 깎지 않는다.
+    """
+    e = html.escape
+    body = (r[K_TEXT] or "").strip() if len(r) > K_TEXT else ""
+    cat = topics.display_name(r[K_PRI] or "") or ""
+    tag = " · 홍보" if csfit.is_pr(r[K_HEAD] or "") else ""
+    head = f"<b>[{e(cat)}]</b>{tag}"
+
+    if body:
+        lines = body.split("\n")
+        if lines and settings.bot_name in lines[0]:
+            lines = lines[1:]
+            while lines and not lines[0].strip():
+                lines = lines[1:]
+        body = "\n".join(lines)
+        # 옛 메시지에 남은 영문 라벨만 펭귄으로 맞춘다.
+        body = body.replace("💡 <b>Why it matters</b>\n", "🐧 ")
+        # 본문 안의 구글뉴스 주소를 전부 실제 기사 주소로 바꾼다.
+        # 제목뿐 아니라 맨 아래 "기사 원문" 도 바로 가야 한다.
+        src = r[K_URL] or ""
+        if url and src and url != src:
+            body = body.replace(html.escape(src, quote=True), html.escape(url, quote=True))
+            body = body.replace(src, url)
+        # 제목은 Instant View 되는 telegra.ph 로, 본문 속 "기사 원문" 은 실제 기사로.
+        body = _link_headline(body, iv or url or src)
+        return head + "\n\n" + body
+
+    # 원문이 없는 옛 행은 가진 필드로 최소 형태를 만든다. 여기서만 escape 한다.
+    parts = [head, "", f'<a href="{e(r[K_URL] or "")}"><b>{e(r[K_HEAD] or "")}</b></a>', ""]
+    if (r[K_LEDE] or "").strip():
+        parts += ["✅ <b>핵심</b>", e(r[K_LEDE].strip()), ""]
+    if (r[K_WHY] or "").strip():
+        parts += [f"🐧 {e(r[K_WHY].strip())}", ""]
+    ts = _ts(r[K_ORIGIN] if len(r) > K_ORIGIN else None) or _ts(r[K_SENT])
+    if ts:
+        parts.append(f"🕒 {datetime.fromtimestamp(ts, KST):%Y-%m-%d %H:%M} KST")
+    return "\n".join(parts)
+
+
+def render_links(picked: list, label: str, _store=None) -> list[tuple[str, str]]:
+    """🔗 top10(링크용) 탭에 나갈 [(본문, 미리보기주소)] — **기사 1건당 1메시지**.
+
+    2026-10-05 사용자 지정. 📌 A팀 Top10 과 번호가 1:1로 맞고, 그 번호로
+    본문 쪽 해설을 찾아갈 수 있어야 한다. 그래서 번호·제목·원문 주소만 넣는다.
+
+    **한 메시지에 몰아 담지 않는다.** 텔레그램은 메시지당 미리보기 카드를
+    하나만 붙이므로(publisher.send_raw 주석), 10건을 묶으면 9건은 카드가 없는
+    맨 주소로 남는다. 한 건씩 보내야 10건 전부 카드가 뜬다.
+
+    주소는 **원문 기사**다 — 인스턴트뷰(telegra.ph)가 아니다. 이 탭은 복사해서
+    메일·보고서에 붙이는 용도라 telegra.ph 중계 주소는 쓸모가 없다.
+    인스턴트뷰로 읽는 건 📌 A팀 Top10 쪽 제목 링크가 한다.
+    """
+    e = html.escape
+    out = []
+    for i, (_, r) in enumerate(picked, 1):
+        url = gnews.resolve(r[K_URL] or "", _store)
+        if not url:
+            continue
+        cat = topics.display_name(r[K_PRI] or "") or ""
+        head = (r[K_HEAD] or "").strip()
+        text = (f"<b>{i}.</b> <b>[{e(cat)}]</b>\n"
+                f"{e(head)}\n"
+                f'<a href="{e(url, quote=True)}">{e(url)}</a>')
+        out.append((text, url))
+    return out
+
+
+def _first_urls(msgs: list[str], items: list[str], urls: list[str]) -> list[str]:
+    """조각마다 **맨 앞 기사**의 주소. 미리보기는 메시지당 하나뿐이라 대표를 고른다."""
+    out, idx = [], 0
+    for m in msgs:
+        taken = sum(1 for it in items if it in m)
+        out.append(urls[idx] if idx < len(urls) else "")
+        idx += max(taken, 1)
+    return out
+
+
+def render_all(picked: list, label: str, _store=None) -> tuple[list[str], list[str]]:
+    """메시지 목록. **내용을 깎지 않는다 — 넘치면 나눈다.**
+
+    한 판으로 보내려고 불릿을 줄이고 문장을 자르던 것을 그만뒀다. 기사 하나가
+    약 460자(보이는 길이)라 10건이면 4,600자다. 텔레그램 상한이 4,096자이니
+    2개로 나뉜다. 11개로 쪼개던 때와는 다르다.
+    """
+    e = html.escape
+    n_pr = sum(1 for _, r in picked if csfit.is_pr(r[K_HEAD] or ""))
+    head = (f"📌 <b>{e(settings.bot_name)} | {e(settings.cs_top10_label)}</b>"
+            f"\n{e(label)}")
+    if n_pr:
+        head += f"  ·  홍보 {n_pr}건 포함"
+
+    # 구글뉴스 리디렉터를 실제 기사 주소로 바꾼다. 발행 링크의 86% 가 그것이다.
+    # 미리보기 카드가 붙으려면 메타태그가 있는 실제 기사 주소여야 한다.
+    urls = [gnews.resolve(r[K_URL] or "", _store) for _, r in picked]
+    ivs = [_iv_url(r, u, _store) for (_, r), u in zip(picked, urls)]
+    items = [render_item(r, url=u, iv=iv)
+             for (_, r), u, iv in zip(picked, urls, ivs)]
+
+    # 몇 조각이 필요한지 먼저 센 뒤, 그 수에 맞춰 **고르게** 나눈다.
+    # 그냥 채우면 3,999자 + 731자 처럼 한쪽으로 쏠려 보기 나쁘다.
+    def pack(limit: int) -> list[str] | None:
+        out, cur = [], head
+        for it in items:
+            cand = cur + ITEM_GAP + it
+            if visible_len(cand) > limit and cur != head:
+                out.append(cur)
+                cur = it
+            else:
+                cur = cand
+        out.append(cur)
+        return out if all(visible_len(m) <= SAFE_LIMIT for m in out) else None
+
+    base = pack(SAFE_LIMIT)
+    n = len(base)
+    if n == 1:
+        return base, []
+    # 조각 수를 늘리지 않는 선에서 한도를 조여 균등하게 만든다.
+    total = visible_len(head) + sum(visible_len(i) + len(ITEM_GAP) for i in items)
+    for limit in range(total // n + 60, SAFE_LIMIT + 1, 40):
+        trial = pack(limit)
+        if trial and len(trial) == n:
+            return trial, []
+    return base, []
+
+
+_ART_ID = re.compile(r"idxno=(\d+)|newsId=(\w+)|/v/(\d+)|ncode=(\w+)"
+                     r"|AKR(\d+)|articles/(\d+)|key=(\w+)")
+
+
+def article_key(url: str) -> str:
+    """"호스트#기사번호". 같은 기사면 주소 표기가 달라도 같은 값이 나온다.
+
+    봇은 구글뉴스 리디렉터를, 사람이 고른 행은 풀린 원문을 저장한다. 그래서
+    URL 문자열 비교로는 같은 기사를 못 잡는다. 엔티티 비교(_same)도
+    main_entities 가 빈 행에서는 통하지 않는다(2026-10-05 뱅크샐러드 사고).
+    """
+    u = url or ""
+    m = _ART_ID.search(u)
+    if not m:
+        return ""
+    num = next((g for g in m.groups() if g), "")
+    host = re.sub(r"^https?://", "", u).split("/")[0]
+    host = re.sub(r"^(www\.|m\.|view\.|news\.|biz\.)", "", host)
+    if not num or "google" in host:
+        return ""
+    return f"{host}#{num}"
+
+
+def topup(picked: list, rows: list, store, now: float, want: int,
+          prior=None, ignore_cat_cap: bool = False,
+          min_fit: int | None = None) -> list:
+    """부족분을 **전날 기사에서 한 건씩 채운다.** 이미 뽑은 건 건드리지 않는다.
+
+    2026-10-05 사용자 지정: "72시간까지 뽑지 말고, 그 전날 기사 중에 그나마
+    Top10 에 들어갈 만한 걸로 부족한 걸 채워 넣어."
+
+    **창을 넓혀 다시 뽑는 것과 다르다.** 다시 뽑으면 후보가 늘면서 범주 상한·
+    보장석 경쟁이 달라져 오히려 줄어든다(실측: 24h 9건 → 60h 6건). 여기서는
+    오늘 뽑은 것을 그대로 두고 **모자란 수만큼만** 앞날에서 더한다.
+
+    기준은 그대로다 — 같은 사건 금지, A팀 기공유 제외, 범주·엔티티 상한,
+    유료 교체, 본문 확보 검사를 전부 통과한 것만 더한다.
+    """
+    if len(picked) >= want:
+        return picked
+
+    used_art = store.top10_article_keys() if store is not None else set()
+    for sc, r in picked:
+        _k = article_key(r[K_URL] or "")
+        if _k:
+            used_art.add(_k)
+
+    cap = settings.daily_brief_max_per_entity
+    used: dict[str, int] = {}
+    cat_used: dict[str, int] = {}
+    for sc, r in picked:
+        ents = [e for e in (r[K_ENT] or "").split(",") if e]
+        h = ents[0] if ents else (r[K_PRI] or "_")
+        used[h] = used.get(h, 0) + 1
+        catg = csfit.primary_category(r[K_HEAD] or "", r[K_ENT] or "")
+        cat_used[catg] = cat_used.get(catg, 0) + 1
+
+    # 적합도 + 추천 서칭 순서 가산점으로 '그나마 들어갈 만한' 순서를 만든다.
+    scored = []
+    for r in rows:
+        fit, _ = csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
+                             r[K_PRI] or "", r[K_SCORE])
+        scored.append((fit + TIER_BONUS.get(tier_of(r), 0), fit, r))
+    scored.sort(key=lambda x: -x[0])
+
+    added = 0
+    for _, fit, r in scored:
+        if len(picked) >= want:
+            break
+        floor = csfit.FLOOR_MIN_SCORE if min_fit is None else min_fit
+        if fit < floor:
+            continue
+        if shared.already_shared(r[K_HEAD] or ""):
+            continue
+        # **다른 날짜 Top10 에 이미 실린 그 기사는 뺀다.** select() 에만 이
+        # 검사를 두었더니 보충 경로로 같은 기사가 되들어왔다(2026-10-05).
+        _ak = article_key(gnews.resolve(r[K_URL] or "", store))
+        if _ak and _ak in (used_art or set()):
+            print(f"[cstop10] 보충 제외(타 날짜 Top10): {(r[K_HEAD] or '')[:36]}")
+            continue
+        # select() 가 거르는 것들이 보충 경로로 새어 들어오면 안 된다.
+        if csfit.is_crypto_tech(r[K_HEAD] or ""):
+            continue
+        if csfit.is_pr(r[K_HEAD] or ""):
+            continue          # 홍보성은 select() 의 2일 간격 규칙으로만 넣는다
+        # **이전 Top10 에 실렸거나 일반 탭으로 이미 나간 사건도 뺀다.**
+        # 보충 경로에 이 검사가 빠져 있어서, 이미 일반 탭에 다섯 번 나간
+        # 애큐온 인수 건이 보충으로 다시 들어왔다(2026-10-05).
+        if prior and any(
+                _same(r[K_HEAD] or "", r[K_ENT] or "",
+                      r[K_ETYPE] if len(r) > K_ETYPE else "",
+                      h or "", e or "", t or "", strict=True)
+                for h, e, t in prior):
+            print(f"[cstop10] 보충 제외(기발행): {(r[K_HEAD] or '')[:38]}")
+            continue
+        # **같은 사건은 절대 두 번 싣지 않는다** (사용자 지정).
+        if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                     r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     q[K_HEAD] or "", q[K_ENT] or "",
+                     q[K_ETYPE] if len(q) > K_ETYPE else "")
+               for _, q in picked):
+            continue
+        ents = [e for e in (r[K_ENT] or "").split(",") if e]
+        head = ents[0] if ents else (r[K_PRI] or "_")
+        if used.get(head, 0) >= cap:
+            continue
+        catg = csfit.primary_category(r[K_HEAD] or "", r[K_ENT] or "")
+        if not ignore_cat_cap and \
+                cat_used.get(catg, 0) >= csfit.CATEGORY_CAP.get(catg, 2):
+            continue
+        got = _fetchable([(fit, r)], store)
+        if got is None:
+            continue
+        picked.append(got)
+        used[head] = used.get(head, 0) + 1
+        cat_used[catg] = cat_used.get(catg, 0) + 1
+        added += 1
+        print(f"[cstop10] 전날에서 보충: 적합{fit} {(r[K_HEAD] or '')[:40]}")
+    if added:
+        print(f"[cstop10] 전날 기사로 {added}건 보충 → {len(picked)}건")
+    return picked
+
+
+async def run(client, store, dry_run: bool | None = None,
+              asof: float | None = None) -> int | None:
+    """asof 를 주면 **그 시각 기준**으로 뽑는다(과거분 소급 생성용).
+
+    봇이 멈춰 있던 날의 Top10 을 뒤늦게 만들 때 쓴다. 창·라벨·중복 판정이
+    전부 그 시각을 기준으로 돌아가므로, 그날 아침에 돌았을 때와 같은 결과가
+    나온다. 평소 운영에서는 쓰지 않는다(asof=None → 지금).
+    """
+    import asyncio
+    import publisher
+    dry = settings.dry_run if dry_run is None else dry_run
+    since, until, label = window(asof)
+    by_origin = asof is not None
+    want = settings.daily_brief_count
+
+    def _pick(since_ts):
+        # 소급 생성(asof)은 원문 발행일로 자른다 — 그날 봇이 멈춰 있었으면
+        # sent_at 기준 후보가 0건이기 때문이다. store.cstop10_candidates 주석 참고.
+        rows = store.cstop10_candidates(since_ts, until,
+                                        settings.discard_threshold,
+                                        by_origin=by_origin)
+        return rows, select(rows, store=store, now=asof)
+
+    rows, picked = _pick(since)
+
+    # 10건이 안 차면 **전날 기사에서 부족분만 채운다** (2026-10-05 사용자 지정).
+    #
+    # 창을 넓혀 통째로 다시 뽑던 방식은 버렸다. 후보가 늘면 범주 상한·보장석
+    # 경쟁이 달라져 오히려 줄었다(실측: 24h 9건 → 60h 6건). 오늘 뽑은 것은
+    # 그대로 두고 모자란 수만큼만 하루씩 앞으로 가며 더한다.
+    #
+    # 기준은 그대로다 — 같은 사건은 절대 두 번 싣지 않고, 범주·엔티티 상한과
+    # 유료 교체·본문 확보 검사를 전부 통과한 것만 더한다. topup() 주석 참고.
+    # **창 안에 남은 것을 먼저 다 쓴다** (2026-10-05 지적).
+    #
+    # 범주 상한에 막혀 창 안 기사가 7건이나 남았는데 전날로 넘어가 10/1~10/2
+    # 기사를 가져왔다. 상한은 "한 범주가 독식하지 않게" 하려는 것이지 "창 밖에서
+    # 가져오라"는 뜻이 아니다. 10 건이 안 차면 상한을 풀어서라도 **그날 창 안을
+    # 먼저 비운다.** 그래도 모자랄 때만 전날로 간다.
+    if len(picked) < want:
+        print(f"[cstop10] {len(picked)}건 — 범주 상한을 풀고 창 안에서 먼저 채운다")
+        # **기게재 검사를 빠뜨리면 안 된다.** 예전엔 published_clusters_before 만
+        # 넘겨서, 어제 Top10 에 실린 사건의 다른 기사가 오늘 다시 들어왔다
+        # (2026-10-05 감사). 전날 보충 경로와 같은 두 목록을 넘긴다.
+        #
+        # 범주 상한만 푼다. **적합도 하한은 그대로 둔다** — 사용자 지시는
+        # "범주 상한을 풀어서라도"였지 품질 하한을 풀라는 뜻이 아니었다.
+        _prior = (store.cstop10_recent_clusters(since - 7 * 24 * 3600)
+                  + store.published_clusters_before(since))
+        picked = topup(picked, rows, store, asof or datetime.now(KST).timestamp(),
+                       want, prior=_prior, ignore_cat_cap=True)
+
+    day = 24 * 3600
+    back = 0
+    while len(picked) < want and back < settings.cs_top10_fill_days:
+        back += 1
+        lo, hi = since - day * back, since - day * (back - 1)
+        extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
+                                         by_origin=by_origin)
+        if not extra:
+            continue
+        print(f"[cstop10] {len(picked)}건 — {back}일 전 기사 {len(extra)}건에서 보충한다")
+        # 보충 대상도 '이미 나간 사건' 검사를 받아야 한다. 기준 시점은
+        # **그 기사들이 속한 날의 시작** 이다 — 그보다 전에 나간 것만 기발행이다.
+        prior = (store.cstop10_recent_clusters(lo - 7 * 24 * 3600)
+                 + store.published_clusters_before(lo))
+        picked = topup(picked, extra, store,
+                       asof or datetime.now(KST).timestamp(), want, prior=prior)
+
+    if len(picked) < want:
+        print(f"[cstop10] {settings.cs_top10_fill_days}일 전까지 뒤졌으나 {len(picked)}건 "
+              f"— 기준을 지키면 서로 다른 사건이 이만큼뿐이다")
+
+    span = (f"{datetime.fromtimestamp(since, KST):%m-%d %H:%M}"
+            f" ~ {datetime.fromtimestamp(until, KST):%m-%d %H:%M}")
+    print(f"[cstop10] 구간 {span} · 후보 {len(rows)}건 → 선정 {len(picked)}건")
+    if not picked:
+        print("[cstop10] 후보 없음 — 게시하지 않음")
+        return None
+
+    msgs, preview_urls = render_all(picked, label, store)
+    print(f"[cstop10] 메시지 {len(msgs)}건 "
+          f"(보이는 길이 {[visible_len(m) for m in msgs]})")
+
+    if dry:
+        for m in msgs:
+            print("─" * 60)
+            print(m)
+        print("─" * 60)
+        print("[cstop10] 🔗 링크용 탭에 나갈 것 (기사 1건당 1메시지):")
+        for text, _ in render_links(picked, label, store):
+            print("  · " + text.replace("\n", " / "))
+        print("[cstop10] DRY_RUN — 발행하지 않았습니다")
+        return None
+
+    thread = topics.thread_id_for("cs_top10")
+    # 📌 A팀 Top10 도 링크용 탭처럼 머리말을 먼저 띄운다
+    # (2026-10-05 사용자 지정). 본문이 2개로 나뉘는 날이 많아, 어디서
+    # 그날 묶음이 시작하는지 날짜로 알려 줘야 한다.
+    _d = datetime.fromtimestamp(until, KST)
+    _header_id = None
+    try:
+        hid = await publisher.send_raw(
+            client,
+            f"📌 <b>{_d.month}월 {_d.day}일자 {settings.cs_top10_label} 발행 시작합니다</b>",
+            thread)
+        # **여기서 발행 기록을 남기지 않는다.** 머리말만 나가고 본문 전송이
+        # 실패하면 due() 가 "오늘 이미 발행함"을 돌려주어 재시도가 영영 막힌다
+        # (2026-10-05 감사). 기록은 본문이 실제로 나간 뒤에 남긴다.
+        _header_id = hid
+        await asyncio.sleep(0.5)
+    except Exception as exc:                              # noqa: BLE001
+        print(f"[cstop10] 머리말 실패 — {exc}")
+    first = None
+    for i, m in enumerate(msgs):
+        mid = await publisher.send_raw(
+            client, m, thread,
+            preview_url=preview_urls[i] if i < len(preview_urls) else None)
+        # 발행분을 기록해 둔다 — 나중에 이 메시지만 골라 지울 수 있게.
+        store.record_agg_message("cs_top10", until + i, mid)
+        if i == 0 and _header_id:
+            # 머리말도 나중에 지울 수 있게 함께 남긴다(본문이 나간 뒤에).
+            store.record_agg_message("cs_top10", until - 1, _header_id)
+        first = first or mid
+        if i < len(msgs) - 1:
+            await asyncio.sleep(0.6)
+    # 🔗 top10(링크용) — 같은 10건의 원문 주소를 한 건씩 따로 보낸다.
+    # 본문 발행이 끝난 뒤에 한다. 이쪽이 실패해도 Top10 은 이미 나가 있어야 한다.
+    links_thread = topics.thread_id_for("cs_top10_links")
+    if links_thread:
+        # 머리말을 먼저 띄운다 (2026-10-05 사용자 지정).
+        # 링크만 10건이 연달아 올라오면 어느 날짜 묶음인지, 어디서 시작하는지
+        # 알 수 없다. 날짜를 박아 묶음의 시작을 알린다.
+        _d = datetime.fromtimestamp(until, KST)
+        try:
+            await publisher.send_raw(
+                client, f"📌 <b>{_d.month}월 {_d.day}일자 {settings.cs_links_label} 발행 시작합니다</b>",
+                links_thread)
+            await asyncio.sleep(0.5)
+        except Exception as exc:                          # noqa: BLE001
+            print(f"[cstop10] 링크용 머리말 실패 — {exc}")
+        sent = 0
+        for i, (text, url) in enumerate(render_links(picked, label, store)):
+            try:
+                mid = await publisher.send_raw(client, text, links_thread,
+                                               preview_url=url)
+            except Exception as exc:                      # noqa: BLE001
+                print(f"[cstop10] 링크 {i + 1}번 발행 실패 — {exc}")
+                continue
+            # window_end 가 (scope, window_end) 유일키다. 본문 쪽과 겹치지 않게 비켜 둔다.
+            store.record_agg_message("cs_top10_links", until + 100 + i, mid)
+            sent += 1
+            await asyncio.sleep(0.6)   # 텔레그램 초당 제한을 피한다
+        print(f"[cstop10] 🔗 링크용 {sent}건 발행")
+    else:
+        print("[cstop10] 🔗 링크용 탭 thread_id 없음 — 건너뜀 "
+              "(scripts/setup_topics.py --create 로 탭을 만들어라)")
+
+    # 실린 기사를 표시해 둔다 — 다음 회차에서 다시 뽑히지 않게.
+    store.mark_cstop10([r[K_KEY] for _, r in picked],
+                       datetime.fromtimestamp(until, KST).strftime("%Y-%m-%d"))
+    if any(csfit.is_pr(r[K_HEAD] or "") for _, r in picked):
+        store.record_pr_pick(until, first)
+        print("[cstop10] 홍보성 1건 게재 — 이틀간 보류")
+    return first

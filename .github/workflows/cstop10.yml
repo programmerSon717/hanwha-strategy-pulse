@@ -1,0 +1,90 @@
+name: bsp-pulse-cs-top10
+
+# 📌 A팀 Top10 — 매일 KST 06:50.
+#
+# ☀️ Morning Brief(07:00, brief.yml)와 **선정 기준이 다르다.**
+#   Morning Brief : 모델의 strategic_score + 추천 서칭 순서 티어
+#   A팀 Top10  : csfit.score() — A팀이 실제 공유한 125건의 주제 분포
+#
+# GitHub 의 cron 은 UTC 다. KST 06:50 = UTC 21:50 (전날).
+#
+# **예약 실행은 정시에 오지 않는다.** GitHub 무료 티어의 schedule 은 best-effort 라
+# 몇 분에서 수십 분까지 밀린다(크립토 봇 실측: 간격 중앙값 42분, 최대 11시간).
+# 브리프는 "아침 7시 전후"면 되는 물건이라 이 지연을 감수한다.
+# 정시성이 꼭 필요해지면 21:40 UTC 에 한 번 더 걸고 중복 발행을 digest_log 로 막는다
+# (store.last_brief_cutoff 가 이미 그 역할을 한다).
+
+on:
+  schedule:
+    # **06:50 은 무슨 일이 있어도 나가야 한다**(2026-10-05 사용자 지정).
+    #
+    # 그래서 깨우는 길을 셋으로 둔다. 어느 하나만 와도 나가고, 둘 이상이 와도
+    # --if-due 가 "오늘 이미 발행함"을 보고 한 번만 내보낸다.
+    #   1) 상시 루프(bot.yml)가 06:50 정각에 깨어나 바로 낸다  ← 주 경로
+    #   2) 아래 cron 3개 — 루프가 죽어 있을 때의 보험
+    #   3) 사람이 Actions 에서 Run workflow
+    #
+    # cron 을 여러 개 거는 이유: GitHub 무료 티어 예약은 best-effort 라 하루
+    # 한 번짜리는 통째로 건너뛴다(2026-10-02 실측: 발화 0건). 세 번 걸면
+    # 전부 빠질 확률이 그만큼 낮아진다. KST 06:50 = UTC 21:50 (전날).
+    - cron: "45 21 * * *"
+    - cron: "52 21 * * *"
+    - cron: "5 22 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "발행하지 않고 내용만 확인"
+        type: boolean
+        default: true
+
+concurrency:
+  group: bsp-pulse-brief
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - run: pip install -q -r requirements.txt
+
+      - name: Morning Brief 생성
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # telegra.ph IV 페이지용. 비어도 돌지만 실행마다 계정이 새로 생긴다.
+          TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_TOKEN }}
+          USE_TOPICS: "true"
+          TG_TOPIC_HANWHA_GROUP: ${{ secrets.TG_TOPIC_HANWHA_GROUP }}
+          TG_TOPIC_MA_GOVERNANCE: ${{ secrets.TG_TOPIC_MA_GOVERNANCE }}
+          TG_TOPIC_INSURANCE_FINANCE: ${{ secrets.TG_TOPIC_INSURANCE_FINANCE }}
+          TG_TOPIC_REGULATION_POLICY: ${{ secrets.TG_TOPIC_REGULATION_POLICY }}
+          TG_TOPIC_COMPETITORS_BIGTECH: ${{ secrets.TG_TOPIC_COMPETITORS_BIGTECH }}
+          TG_TOPIC_DIGITAL_NEWBIZ: ${{ secrets.TG_TOPIC_DIGITAL_NEWBIZ }}
+          TG_TOPIC_GLOBAL_FINANCE: ${{ secrets.TG_TOPIC_GLOBAL_FINANCE }}
+          TG_TOPIC_KEY_ISSUES: ${{ secrets.TG_TOPIC_KEY_ISSUES }}
+          TG_TOPIC_DAILY_BRIEF: ${{ secrets.TG_TOPIC_DAILY_BRIEF }}
+          TG_TOPIC_CS_TOP10: ${{ secrets.TG_TOPIC_CS_TOP10 }}
+          TG_TOPIC_CS_TOP10_LINKS: ${{ secrets.TG_TOPIC_CS_TOP10_LINKS }}
+          # 수동 실행에서 dry_run 을 켜면 발행하지 않는다.
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        # --if-due: 06:50 전에 깨면 아무것도 하지 않고 빠진다. 지난 뒤에
+        # 깨고 오늘 아직 안 나갔을 때만 낸다. 중복 발행이 원천 차단된다.
+        run: python main.py --cstop10 --if-due
+
+      - name: 브리프 기록 저장
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          git config user.name  "bsp-pulse-bot"
+          git config user.email "bsp-pulse@users.noreply.github.com"
+          git add botstate.sqlite3 || true
+          git diff --cached --quiet || git commit -m "chore: Morning Brief 기록 [skip ci]"
+          git push || echo "[경고] push 실패 — 다음 실행에서 다시 시도"

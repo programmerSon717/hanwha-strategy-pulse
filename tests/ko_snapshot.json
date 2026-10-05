@@ -1,0 +1,295 @@
+{
+ "labels": {
+  "": "",
+  "CoinPost(일본)": "CoinPost",
+  "Cointelegraph": "Cointelegraph",
+  "규제:미국(Bloomberg.com)": "Bloomberg.com",
+  "규제:한국(Decenter)": "Decenter",
+  "블록미디어": "블록미디어"
+ },
+ "render": {
+  "거래소 공지": "c05b9e5b4b35a10f",
+  "보통 기사": "575c2188842d6ddc",
+  "섹션 제목 지정": "c3669d843e285109",
+  "업데이트 블록": "0447a2f82f4295e1",
+  "인사이트(트윗 캡처)": "a2ed04032b92bde3"
+ },
+ "rows": [
+  {
+   "category": "이슈",
+   "headline": "생성형 AI가 제공한 링크와 코드 파일 악용한 디지털자산 탈취 공격 확인",
+   "len": 649,
+   "text_sha": "b6f31a0f0eded89c"
+  },
+  {
+   "category": "US Policy",
+   "headline": "미국 독립커뮤니티은행협회, 스테이블코인 수익 제공 전면 금지 요구",
+   "len": 807,
+   "text_sha": "c6043365c8d7dfce"
+  },
+  {
+   "category": "이슈",
+   "headline": "폴리곤, 최근 하드포크로 해결한 보안 취약점 사후 공개",
+   "len": 791,
+   "text_sha": "a2826f019bb938f4"
+  },
+  {
+   "category": "해외정책",
+   "headline": "영국 암호화폐 이익 절반, 상위 240명에 집중",
+   "len": 638,
+   "text_sha": "291281b2de7152b1"
+  },
+  {
+   "category": "US Rates",
+   "headline": "케빈 워시 연준 의장의 소통 방식을 두고 실효성 논란 제기",
+   "len": 755,
+   "text_sha": "841a6c37e3b8aedc"
+  },
+  {
+   "category": "US Policy",
+   "headline": "미국 SEC 수탁 현대화 규칙, 최종 심사 단계 진입",
+   "len": 649,
+   "text_sha": "133c772950895e67"
+  },
+  {
+   "category": "이슈",
+   "headline": "코스모스 랩스, 570만 달러 규모 멀티체인 해킹 유발 취약점 검증 오류 시인",
+   "len": 703,
+   "text_sha": "6cf4cd42c5c1b395"
+  },
+  {
+   "category": "거래소이슈",
+   "headline": "바이비트, 스페이스X·엔비디아 등 주식 무기한 선물 옵션 출시",
+   "len": 893,
+   "text_sha": "61aa699e1440f60e"
+  },
+  {
+   "category": "US Policy",
+   "headline": "미 OCC와 FDIC, 은행의 '불안전 또는 불건전 행위' 정의 및 감독 기준 명확화 추진",
+   "len": 959,
+   "text_sha": "6bea9af301dd2406"
+  },
+  {
+   "category": "국내정책",
+   "headline": "가상자산거래소 대주주 지분 대신 의결권 제한 추진",
+   "len": 665,
+   "text_sha": "141e99aab6b65aa6"
+  },
+  {
+   "category": "이슈",
+   "headline": "솔라나 기반 금융 서비스 아비치, 취약점 노출로 67만 달러 규모 해킹 피해",
+   "len": 614,
+   "text_sha": "cd14ba94670bce67"
+  },
+  {
+   "category": "US Policy",
+   "headline": "미국 SEC, 크립토·고레버리지 신종 ETF 자동 승인 경로 재검토",
+   "len": 670,
+   "text_sha": "3abef66036c60601"
+  },
+  {
+   "category": "US Policy",
+   "headline": "미국 SEC, 이색 크립토 및 이벤트 연계 ETF 급증에 자동 승인 경로 재검토",
+   "len": 828,
+   "text_sha": "27ddb1b3c56c40b1"
+  },
+  {
+   "category": "US Rates",
+   "headline": "케빈 워시 연준 의장의 매파적 잭슨홀 기조연설에 비트코인 하락",
+   "len": 635,
+   "text_sha": "e6c64edd719eaf9f"
+  },
+  {
+   "category": "해외정책",
+   "headline": "국제결제은행 총지배인 \"스테이블코인은 화폐의 모든 테스트 통과 못 해\"",
+   "len": 928,
+   "text_sha": "1fe092ce7d8f96c9"
+  },
+  {
+   "category": "US Policy",
+   "headline": "미국 정부 민간기업 지분 확대… 반도체·희토류 공급망 정책 법적 논쟁",
+   "len": 659,
+   "text_sha": "186bb503c7720988"
+  },
+  {
+   "category": "US Rates",
+   "headline": "미 재무부 장기채 바이백 규모 확대에도 금리 고공행진",
+   "len": 681,
+   "text_sha": "730f6cc6f0254b4e"
+  },
+  {
+   "category": "해외정책",
+   "headline": "바젤은행감독위원회, 은행 암호자산 규제 이행 점검 본격화",
+   "len": 693,
+   "text_sha": "7e9022c6fc393254"
+  },
+  {
+   "category": "해외정책",
+   "headline": "바젤은행감독위원회, 은행 가상자산 건전성 기준 재검토",
+   "len": 570,
+   "text_sha": "b304049b1fcd4877"
+  },
+  {
+   "category": "해외정책",
+   "headline": "BIS 중앙은행 거버넌스 그룹, AI 및 스테이블코인 논의 의제 채택",
+   "len": 796,
+   "text_sha": "41d36d804579214b"
+  },
+  {
+   "category": "해외정책",
+   "headline": "국제결제은행, 스테이블코인 통화정책 의제로 공식 채택",
+   "len": 767,
+   "text_sha": "cd52772efb384248"
+  },
+  {
+   "category": "US Rates",
+   "headline": "미국 8월 고용보고서 9월 4일 발표… 연준 금리 경로 가를 핵심 변수",
+   "len": 808,
+   "text_sha": "a09bdeba67ea34c4"
+  },
+  {
+   "category": "이슈",
+   "headline": "GoPlus: GOLD 토큰 사기단, 쿠코인 자금 추적 및 악성 토큰 추가 배포 확인",
+   "len": 931,
+   "text_sha": "53583b360d4287c1"
+  },
+  {
+   "category": "US Rates",
+   "headline": "미국 8월 고용보고서, 9월 FOMC 앞두고 핵심 변수로 부상",
+   "len": 632,
+   "text_sha": "24ef56ec98736ebc"
+  },
+  {
+   "category": "이슈",
+   "headline": "GoPlus: GOLD 사기단 820만 달러 이상 편취 후 악성 토큰 추가 배포",
+   "len": 751,
+   "text_sha": "60056b5de9533472"
+  },
+  {
+   "category": "거래소이슈",
+   "headline": "바이낸스, 미국 주식 상품 3개 구조로 개편… 24시간 거래 지원",
+   "len": 638,
+   "text_sha": "66da1ef86eba054e"
+  },
+  {
+   "category": "이슈",
+   "headline": "탈중앙화 대출 프로토콜 Ajna v2, 청산 회계 조작 공격으로 약 77만 달러 피해",
+   "len": 742,
+   "text_sha": "782c4840e8cfd9ad"
+  },
+  {
+   "category": "거래소이슈",
+   "headline": "한국 5대 가상자산 거래소 주간 거래액 188% 급증해 10개월 만에 최고치 기록",
+   "len": 629,
+   "text_sha": "ae6cd3ad195bce8c"
+  },
+  {
+   "category": "해외정책",
+   "headline": "BIS 사무총장, 스테이블코인 대규모 결제 수단으로 부적합",
+   "len": 726,
+   "text_sha": "a2202a6e36898055"
+  },
+  {
+   "category": "이슈",
+   "headline": "폴리곤, 오스틴 및 교토 하드포크 이후 긴급 클라이언트 업그레이드 권고",
+   "len": 669,
+   "text_sha": "759263d5ba288e16"
+  },
+  {
+   "category": "이슈",
+   "headline": "트럼프 관련 가칭 밈코인 발행자가 전량 매도 후 101만 달러 차익",
+   "len": 686,
+   "text_sha": "bde1c699cf031085"
+  },
+  {
+   "category": "US Rates",
+   "headline": "워시 연준 의장 발언 이후 9월 금리 인상 확률 50%로 급등",
+   "len": 975,
+   "text_sha": "cf095fd7c61dd172"
+  },
+  {
+   "category": "Hong Kong Policy",
+   "headline": "홍콩 증감회, 무면허 업체 6곳 지정… 테더(USDT) 입금으로 자금 추적 난항",
+   "len": 795,
+   "text_sha": "03333d7e2999f5c1"
+  },
+  {
+   "category": "US Policy",
+   "headline": "중국 반도체 기업 창신메모리, 미 국방부 상대로 블랙리스트 제외 소송 제기",
+   "len": 636,
+   "text_sha": "c556f5de7b74cfcd"
+  },
+  {
+   "category": "이슈",
+   "headline": "서비스나우 AI 플랫폼에서 최고 위험 등급 보안 취약점 3건 발견",
+   "len": 719,
+   "text_sha": "aea476a3e82c2405"
+  },
+  {
+   "category": "US Policy",
+   "headline": "미 제9항소법원, 칼시 스포츠 계약은 스와프가 아니라고 판결",
+   "len": 644,
+   "text_sha": "d37d819775203c4d"
+  },
+  {
+   "category": "이슈",
+   "headline": "글로벌 대형 은행 컨소시엄, 퍼블릭 체인 기반 스테이블코인 발행 추진",
+   "len": 754,
+   "text_sha": "61b04f73612b1687"
+  },
+  {
+   "category": "이슈",
+   "headline": "코스모스, 4개월간 치명적 버그 오판… 6개 체인에서 600만 달러 규모 해킹 피해",
+   "len": 711,
+   "text_sha": "c2d9a6d4501d81fb"
+  },
+  {
+   "category": "이슈",
+   "headline": "솔라나 기반 네오뱅크 레인, 컨트랙트 취약점 노린 해킹으로 50만 달러 피해",
+   "len": 760,
+   "text_sha": "ac2d2fa21ef41124"
+  },
+  {
+   "category": "US Rates",
+   "headline": "케빈 워시 연준 의장 잭슨홀 발언 여파에 크립토 시장 4억 8800만 달러 청산 발생",
+   "len": 895,
+   "text_sha": "313aa247abc4b650"
+  }
+ ],
+ "tabs": {
+  "China": "🇨🇳중국정책",
+  "Global Macro": "🌐글로벌매크로",
+  "Hong Kong Policy": "🇭🇰홍콩정책",
+  "Japan Policy": "🇯🇵일본정책",
+  "Korea Equities": "🇰🇷한국증시",
+  "Korea Rates": "🇰🇷한국매크로",
+  "Singapore Policy": "🇸🇬싱가폴정책",
+  "UAE Policy": "🇦🇪UAE정책",
+  "US Equities": "🇺🇸미국증시",
+  "US Policy": "🇺🇸미국정책",
+  "US Rates": "🇺🇸미국매크로",
+  "Vietnam Policy": "🇻🇳베트남정책",
+  "거래소이슈": "🏦거래소이슈",
+  "국내정책": "🇰🇷한국정책",
+  "이슈": "🚨주요이슈",
+  "해외정책": "🌎해외정책"
+ },
+ "tags": {
+  "China": "#중국정책",
+  "Global Macro": "#글로벌매크로",
+  "Hong Kong Policy": "#홍콩정책",
+  "Japan Policy": "#일본정책",
+  "Korea Equities": "#한국증시",
+  "Korea Rates": "#한국매크로",
+  "Singapore Policy": "#싱가폴정책",
+  "UAE Policy": "#UAE정책",
+  "US Equities": "#미국증시",
+  "US Policy": "#미국정책",
+  "US Rates": "#미국매크로",
+  "Vietnam Policy": "#베트남정책",
+  "거래소이슈": "#거래소이슈",
+  "국내정책": "#한국정책",
+  "이슈": "#주요이슈",
+  "해외정책": "#해외정책"
+ }
+}
