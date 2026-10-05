@@ -121,7 +121,16 @@ def same_event(a: tuple, title_a: str, b: tuple, title_b: str) -> bool:
     if action_a != action_b or bucket_a != bucket_b:
         return False
     if not (ents_a & ents_b):
-        return False
+        # **교집합이 비어도 포기하지 않는다.** 모델이 같은 사건의 엔티티를
+        # 기사마다 다르게 적는 것이 애초의 문제인데, 교집합을 AND 조건으로
+        # 요구하면 그 문제에 그대로 뚫린다. 실측: 같은 볼트온 기사가 한쪽은
+        # {한화생명}, 다른 쪽은 {도쿄해상} 으로 적혀 갈렸다(2026-10-05).
+        #
+        # 대신 **내용이 강하게 겹칠 때만** 같은 사건으로 본다 —
+        # 제목 유사도가 높거나, 변별력 있는 낱말을 공유할 때.
+        if similarity(title_a, title_b) >= TITLE_SIMILARITY:
+            return True
+        return _distinctive_overlap(title_a, title_b, ents_a | ents_b)
     # 제목 유사도를 **내용 낱말로만** 재도록 좁혀 봤으나 되돌렸다(2026-10-05).
     # 그러면 "한화생명, 애큐온 인수 확정" × "…인수 통해 여신금융 진출" 이
     # 0.25 에서 0.125 로 떨어져 갈라진다 — 2026-10-01 애큐온 3중 발행 사고를
