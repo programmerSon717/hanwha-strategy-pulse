@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>파이프라인</title>
+<meta name="description" content="수집 → 판정 → 발행 실시간 현황과 제외 사유">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='19' font-size='19'>📈</text></svg>">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="stylesheet" href="assets/app.css">
+</head><body>
+
+<main class="wrap">
+  <h1 class="page-h">파이프라인</h1>
+
+  <div class="panel" style="margin-bottom:26px">
+    <div class="chips" id="tabs">
+      <button data-f="all" aria-pressed="true">● 전체 판정</button>
+      <button data-f="pass" aria-pressed="false">통과</button>
+      <button data-f="drop" aria-pressed="false">제외</button>
+      <button data-f="sent" aria-pressed="false">발행됨</button>
+      <button data-f="dup" aria-pressed="false">중복 접힘</button>
+      <label class="q" style="margin-left:auto;max-width:330px;height:40px">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+          <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round"/></svg>
+        <input id="q" placeholder="제목 · 매체 · 사유 검색">
+      </label>
+    </div>
+    <div class="note">
+      <span>ⓘ</span>
+      <span>수집한 기사를 모델이 판정한 기록입니다. <b>제외</b>는 기준 미달이라
+        게시하지 않은 것이고, <b>중복 접힘</b>은 같은 사건이 이미 나가서 접은
+        것입니다. 기준에 맞는 기사가 없으면 발행이 비는 것이 정상입니다.</span>
+    </div>
+    <div class="t-scroll"><table>
+      <thead><tr>
+        <th>제목</th><th style="width:150px">매체</th>
+        <th style="width:150px">토픽</th><th style="width:74px" class="num">점수</th>
+        <th style="width:84px">결과</th><th style="width:270px">사유</th>
+        <th style="width:124px">판정시각</th>
+      </tr></thead>
+      <tbody id="tb"></tbody>
+    </table></div>
+    <div id="pg"></div>
+    <div style="display:flex;align-items:center;margin-top:16px;color:var(--muted);
+                font-size:13.5px"><span id="cnt"></span></div>
+  </div>
+
+  <div class="cols" style="grid-template-columns:1.5fr 1fr">
+    <section class="panel">
+      <h3 style="font-size:19px;margin-bottom:4px">일자별 추이</h3>
+      <p style="color:var(--muted);font-size:13.5px;margin:0 0 14px">
+        진한 막대가 판정 건수, 옅은 막대가 발행 건수입니다.</p>
+      <div class="bars" id="bars"></div>
+    </section>
+    <section class="panel">
+      <h3 style="font-size:19px;margin-bottom:14px">제외 사유 분포</h3>
+      <div id="drops"></div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+import { load, header, footer, esc, pager, plain, grad, icon, num, fmtFull, ago }
+  from './assets/app.js';
+
+header('pipeline.html');
+const [sum, pipe] = await Promise.all(['summary', 'pipeline'].map(load));
+footer(sum.generated_at);
+
+const PER = 25;
+let st = { f: 'all', q: '', page: 1 };
+
+function filtered() {
+  const q = st.q.trim().toLowerCase();
+  return pipe.recent.filter(r => {
+    if (st.f === 'pass' && !r.relevant) return false;
+    if (st.f === 'drop' && r.relevant) return false;
+    if (st.f === 'sent' && !r.sent) return false;
+    if (st.f === 'dup' && !r.dup) return false;
+    if (q && !`${r.title} ${r.source} ${r.reason}`.toLowerCase().includes(q))
+      return false;
+    return true;
+  });
+}
+
+function verdict(r) {
+  if (r.sent) return '<span class="pill up">발행</span>';
+  if (r.dup) return '<span class="pill warn">중복</span>';
+  if (r.relevant) return '<span class="pill flat">통과</span>';
+  return '<span class="pill down">제외</span>';
+}
+
+function draw() {
+  const r = filtered();
+  const pages = Math.max(1, Math.ceil(r.length / PER));
+  st.page = Math.min(st.page, pages);
+  tb.innerHTML = r.slice((st.page - 1) * PER, st.page * PER).map(x => `
+    <tr>
+      <td><span class="clip2">${x.url ? `<a class="ttl" href="${esc(x.url)}"
+            target="_blank" rel="noopener">${esc(x.title)}</a>`
+            : `<span class="ttl">${esc(x.title)}</span>`}</span></td>
+      <td class="date"><span class="clip">${esc(x.source)}</span></td>
+      <td><span class="clip">${x.topic ? `<span style="display:inline-flex;align-items:center;gap:7px">
+          <span class="av" style="${grad(x.topic)};width:20px;height:20px;font-size:10px">
+          ${icon(x.topic_name)}</span>${esc(plain(x.topic_name))}</span>`
+        : '<span style="color:var(--muted)">—</span>'}</span></td>
+      <td class="num">${x.score ?? '—'}</td>
+      <td>${verdict(x)}</td>
+      <td class="date"><span class="clip2" title="${esc(x.reason || '')}">${esc(x.reason || '—')}</span></td>
+      <td class="date">${esc(fmtFull(x.at))}</td>
+    </tr>`).join('')
+    || '<tr><td colspan="7"><div class="empty-box">해당하는 판정 기록이 없습니다.</div></td></tr>';
+  cnt.textContent = `${num(pipe.recent.length)}건 중 ${num(r.length)}건 · `
+    + `마지막 판정 ${ago(sum.last.judged)}`;
+  pager(pg, st.page, pages, p => { st.page = p; draw(); });
+}
+
+tabs.querySelectorAll('button[data-f]').forEach(b => b.onclick = () => {
+  st.f = b.dataset.f; st.page = 1;
+  tabs.querySelectorAll('button[data-f]').forEach(o =>
+    o.setAttribute('aria-pressed', o === b));
+  draw();
+});
+q.addEventListener('input', () => { st.q = q.value; st.page = 1; draw(); });
+
+/* 추이 막대 */
+const t = pipe.trend.slice(-21);
+const max = Math.max(1, ...t.map(d => d.judged));
+bars.innerHTML = t.map(d => `
+  <div class="b" title="${d.date} · 판정 ${d.judged} · 통과 ${d.passed} · 발행 ${d.sent}">
+    <i style="height:${Math.round(d.judged / max * 100)}%"></i>
+    <i class="s" style="height:${Math.round(d.sent / max * 100)}%"></i>
+    <small>${d.date.slice(5).replace('-', '.')}</small></div>`).join('');
+
+/* 제외 사유 */
+const mx = Math.max(1, ...pipe.drops.map(d => d.n));
+drops.innerHTML = pipe.drops.map(d => `
+  <div style="margin-bottom:13px">
+    <div style="display:flex;gap:10px;font-size:13.5px;margin-bottom:5px">
+      <span style="color:var(--ink);font-weight:700">${esc(d.reason)}</span>
+      <b style="margin-left:auto;color:var(--violet)">${num(d.n)}</b></div>
+    <div style="height:7px;background:var(--panel-2);border-radius:4px">
+      <i style="display:block;height:100%;border-radius:4px;background:var(--violet);
+                width:${Math.round(d.n / mx * 100)}%"></i></div></div>`).join('');
+
+draw();
+</script>
+</body></html>

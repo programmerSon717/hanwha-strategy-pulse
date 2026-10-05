@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>수집 기사</title>
+<meta name="description" content="봇이 수집·발행한 기사 전체 목록">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='19' font-size='19'>🗞</text></svg>">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="stylesheet" href="assets/app.css">
+</head><body>
+
+<main class="wrap">
+  <h1 class="page-h">수집 기사</h1>
+  <div class="cols" style="grid-template-columns:1fr 330px">
+    <section>
+      <div class="tools">
+        <span class="count" style="margin:0 6px 0 0">총 <b id="total">0</b></span>
+        <div id="fSort" style="width:150px"></div>
+        <div id="fRange" style="width:150px"></div>
+        <div id="fTopic" style="width:170px"></div>
+        <label class="q">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+            <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round"/></svg>
+          <input id="q" placeholder="검색어를 입력하세요">
+        </label>
+      </div>
+      <div class="t-scroll"><table class="table-plain">
+        <thead><tr>
+          <th>제목</th><th style="width:186px">토픽</th>
+          <th style="width:120px">분류</th><th style="width:124px">기사시각</th>
+        </tr></thead>
+        <tbody id="tb"></tbody>
+      </table></div>
+      <div id="pg"></div>
+    </section>
+
+    <aside>
+      <div class="side"><h4>다음 발행</h4><div id="next"></div></div>
+      <div class="side"><h4>최근 Top10 선정</h4><div id="recent"></div></div>
+      <div class="side"><h4>주요이슈</h4><div id="keys"></div></div>
+    </aside>
+  </div>
+</main>
+
+<script type="module">
+import { load, header, footer, esc, select, pager, plain, icon, grad, num,
+         fmtDate, fmtFull } from './assets/app.js';
+
+header('articles.html');
+const [sum, arts, draft] = await Promise.all(['summary', 'articles', 'draft'].map(load));
+footer(sum.generated_at);
+
+const PER = 30;
+let st = { sort: 'new', range: '', topic: '', q: '', page: 1 };
+const topics = [...new Map(arts.filter(a => a.topic)
+  .map(a => [a.topic, plain(a.topic_name)])).entries()];
+const opt = (v, t) => ({ v, t });
+
+function panels() {
+  select(fSort, [opt('new', '최신순'), opt('old', '오래된순'),
+                 opt('score', '점수순')], st.sort,
+    v => { st.sort = v; st.page = 1; draw(); });
+  select(fRange, [opt('', '전체 기간'), opt('1', '1일'), opt('7', '1주일'),
+                  opt('30', '1개월'), opt('90', '3개월')], st.range,
+    v => { st.range = v; st.page = 1; draw(); });
+  select(fTopic, [opt('', '전체 토픽'), ...topics.map(([v, t]) => opt(v, t)),
+                  opt('__key', '주요이슈'), opt('__top10', 'Top10 선정')],
+    st.topic, v => { st.topic = v; st.page = 1; draw(); });
+}
+
+function filtered() {
+  const q = st.q.trim().toLowerCase();
+  const floor = st.range ? Date.now() - (+st.range) * 86400000 : null;
+  let r = arts.filter(a => {
+    if (st.topic === '__key') { if (!a.key_issue) return false; }
+    else if (st.topic === '__top10') { if (!a.top10_date) return false; }
+    else if (st.topic && a.topic !== st.topic) return false;
+    if (floor && new Date(a.origin_at || a.sent_at || 0).getTime() < floor) return false;
+    if (q && !`${a.title} ${a.lede} ${(a.entities || []).join(' ')}`
+      .toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const k = a => a.origin_at || a.sent_at || '';
+  if (st.sort === 'new') r.sort((a, b) => k(b).localeCompare(k(a)));
+  if (st.sort === 'old') r.sort((a, b) => k(a).localeCompare(k(b)));
+  if (st.sort === 'score') r.sort((a, b) => (b.score || 0) - (a.score || 0));
+  return r;
+}
+
+function draw() {
+  const r = filtered();
+  total.textContent = num(r.length);
+  const pages = Math.max(1, Math.ceil(r.length / PER));
+  st.page = Math.min(st.page, pages);
+  tb.innerHTML = r.slice((st.page - 1) * PER, st.page * PER).map(a => `
+    <tr><td><span class="clip2"><a class="ttl" href="${esc(a.url || '#')}"
+          target="_blank" rel="noopener">${esc(a.title)}</a>
+          ${a.top10_date ? ` <span class="tag">Top10</span>` : ''}
+          ${a.key_issue ? ` <span class="tag">주요</span>` : ''}</span></td>
+      <td><span class="clip" style="display:flex;align-items:center;gap:8px">
+        <span class="av" style="${grad(a.topic)};width:22px;height:22px;font-size:11px">
+          ${icon(a.topic_name)}</span>${esc(plain(a.topic_name) || '미분류')}</span></td>
+      <td><span class="tag">${esc(a.event_type || '일반')}</span></td>
+      <td class="date">${esc(fmtFull(a.origin_at))}</td></tr>`).join('')
+    || '<tr><td colspan="4"><div class="empty-box">조건에 맞는 기사가 없습니다.</div></td></tr>';
+  pager(pg, st.page, pages, p => { st.page = p; draw(); });
+  panels();
+}
+
+/* 사이드 */
+const ed = draft.editions?.[0];
+next.innerHTML = ed ? `
+  <div class="side-row"><span class="nm"><b>${esc(ed.date.replace(/-/g, '.'))} 06:50</b>
+    <span>초안 ${ed.count}건 · 품질 ${ed.quality ?? '—'}</span></span>
+    <span class="rt"><span class="pill ${ed.count >= 10 ? 'up' : 'warn'}">
+      ${ed.count}/10</span></span></div>
+  <div class="side-row"><span class="nm"><b>마지막 교체</b>
+    <span>${esc(fmtFull(ed.built_at))}</span></span></div>`
+  : '<div class="empty">예정된 초안이 없습니다.</div>';
+
+recent.innerHTML = arts.filter(a => a.top10_date).slice(0, 6).map(a => `
+  <div class="side-row"><span class="nm">
+    <b>${esc(a.title)}</b><span>${esc(plain(a.topic_name))}</span></span>
+    <span class="rt"><span class="pill flat">${esc(fmtDate(a.top10_date))}</span></span>
+  </div>`).join('') || '<div class="empty">없습니다.</div>';
+
+keys.innerHTML = arts.filter(a => a.key_issue).slice(0, 6).map(a => `
+  <div class="side-row"><span class="nm">
+    <b>${esc(a.title)}</b><span>${esc(fmtFull(a.origin_at))}</span></span></div>`).join('')
+  || '<div class="empty">없습니다.</div>';
+
+const p = new URLSearchParams(location.search);
+if (p.get('q')) { st.q = p.get('q'); q.value = st.q; }
+if (p.get('topic')) st.topic = p.get('topic');
+q.addEventListener('input', () => { st.q = q.value; st.page = 1; draw(); });
+draw();
+</script>
+</body></html>

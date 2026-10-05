@@ -1,0 +1,59 @@
+# 공개 포털 배포.
+#
+# **봇에 영향을 주지 않는다** — 발주자 지정(2026-10-05): "봇에는 절대 영향
+# 미치면 안 돼." 그래서 이 워크플로는:
+#   · bot.yml / cstop10.yml 을 건드리지 않고, 그 워크플로의 concurrency
+#     그룹도 쓰지 않는다(여기 그룹 이름이 달라 서로 줄을 안 선다).
+#   · 저장소에 **아무것도 커밋하지 않는다.** 상태 DB(botstate.sqlite3) 가
+#     매 회차 커밋되는데, 여기서도 커밋하면 경합해 봇 기록이 유실된다.
+#     화면에 쓸 JSON 은 배포 직전에 만들어 Pages 아티팩트로만 올린다.
+#   · DB 는 읽기 전용으로 연다(tools/export_web.py 의 mode=ro).
+#   · 실패해도 봇과 무관하다 — 다음 주기에 다시 뜬다.
+name: web
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'      # 30분마다. 봇 크론(정각 부근)과 겹치지 않게 비켜 둔다.
+  workflow_dispatch:
+
+# Pages 배포에 필요한 최소 권한. contents 는 읽기만 — 쓰기를 주지 않는 것이
+# "커밋하지 않는다" 를 구조로 보장한다.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 배포끼리만 줄을 선다. 진행 중인 것은 취소해도 안전하다(멱등).
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 데이터 생성
+        run: |
+          python tools/export_web.py docs/data
+          ls -la docs/data
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: 주소
+        run: echo "배포됨 → ${{ steps.deploy.outputs.page_url }}"

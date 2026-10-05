@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Top10 발행</title>
+<meta name="description" content="날짜별 Top10 발행판과 선정 기사">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='19' font-size='19'>📌</text></svg>">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="stylesheet" href="assets/app.css">
+</head><body>
+
+<main class="wrap">
+  <h1 class="page-h">Top10 발행</h1>
+  <div class="cols">
+    <aside class="filter">
+      <div class="filter-h"><h3>필터</h3>
+        <button class="reset" id="reset">↺ 재설정</button></div>
+      <div class="field"><label>발행판</label><div id="fEd"></div></div>
+      <div class="field"><label>토픽</label><div id="fTopic"></div></div>
+      <div class="field"><label>기간</label><div id="fRange"></div></div>
+      <div class="field"><label>엔티티</label><div id="fEnt"></div></div>
+    </aside>
+
+    <section>
+      <div class="tools">
+        <label class="q">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+            <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round"/></svg>
+          <input id="q" placeholder="제목, 요약, 엔티티 검색">
+        </label>
+        <div id="fSort"></div>
+        <div class="view">
+          <button id="vGrid" aria-pressed="true" title="카드">▦</button>
+          <button id="vList" aria-pressed="false" title="목록">☰</button>
+        </div>
+      </div>
+      <p class="count">검색결과 <b id="n">0</b></p>
+      <div id="out"></div>
+      <div id="pg"></div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+import { load, header, footer, esc, select, card, listRow, pager, plain, num,
+         fmtDate } from './assets/app.js';
+
+header('top10.html');
+const [sum, eds] = await Promise.all(['summary', 'top10'].map(load));
+footer(sum.generated_at);
+
+// 발행판을 기사 단위로 편다. 각 기사에 소속 발행판 날짜를 달아 둔다.
+const all = eds.flatMap(e => e.items.map(i => ({ ...i, ed: e.date })));
+const PER = 12;
+let st = { ed: '', topic: '', range: '', ent: '', sort: 'new', q: '', view: 'grid', page: 1 };
+
+const topics = [...new Map(all.filter(a => a.topic)
+  .map(a => [a.topic, plain(a.topic_name)])).entries()];
+const entsTop = Object.entries(all.flatMap(a => a.entities || [])
+  .reduce((m, e) => (m[e] = (m[e] || 0) + 1, m), {}))
+  .sort((a, b) => b[1] - a[1]).slice(0, 24);
+
+const opt = (v, t) => ({ v, t });
+function panels() {
+  select(fEd, [opt('', '전체'), ...eds.map(e => opt(e.date, `${e.date.replace(/-/g, '.')} (${e.count}건)`))],
+    st.ed, v => { st.ed = v; st.page = 1; draw(); });
+  select(fTopic, [opt('', '전체'), ...topics.map(([v, t]) => opt(v, t))],
+    st.topic, v => { st.topic = v; st.page = 1; draw(); });
+  select(fRange, [opt('', '전체 기간'), opt('1', '1일'), opt('7', '1주일'),
+                  opt('30', '1개월'), opt('90', '3개월')],
+    st.range, v => { st.range = v; st.page = 1; draw(); });
+  select(fEnt, [opt('', '전체'), ...entsTop.map(([e, n]) => opt(e, `${e} (${n})`))],
+    st.ent, v => { st.ent = v; st.page = 1; draw(); });
+  select(fSort, [opt('new', '최신순'), opt('old', '오래된순'),
+                 opt('score', '점수순'), opt('ed', '발행판순')],
+    st.sort, v => { st.sort = v; st.page = 1; draw(); });
+}
+
+function filtered() {
+  const q = st.q.trim().toLowerCase();
+  const floor = st.range
+    ? Date.now() - (+st.range) * 86400000 : null;
+  let r = all.filter(a => {
+    if (st.ed && a.ed !== st.ed) return false;
+    if (st.topic && a.topic !== st.topic) return false;
+    if (st.ent && !(a.entities || []).includes(st.ent)) return false;
+    if (floor && new Date(a.origin_at || a.ed).getTime() < floor) return false;
+    if (q && !`${a.title} ${a.lede} ${a.why} ${(a.entities || []).join(' ')}`
+      .toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const key = a => a.origin_at || a.ed || '';
+  if (st.sort === 'new') r.sort((a, b) => key(b).localeCompare(key(a)));
+  if (st.sort === 'old') r.sort((a, b) => key(a).localeCompare(key(b)));
+  if (st.sort === 'score') r.sort((a, b) => (b.score || 0) - (a.score || 0));
+  if (st.sort === 'ed') r.sort((a, b) =>
+    b.ed.localeCompare(a.ed) || a.rank - b.rank);
+  return r;
+}
+
+function draw() {
+  const r = filtered();
+  n.textContent = num(r.length);
+  const pages = Math.max(1, Math.ceil(r.length / PER));
+  st.page = Math.min(st.page, pages);
+  const slice = r.slice((st.page - 1) * PER, st.page * PER);
+  vGrid.setAttribute('aria-pressed', st.view === 'grid');
+  vList.setAttribute('aria-pressed', st.view === 'list');
+  out.className = st.view === 'grid' ? 'grid' : 'list';
+  out.innerHTML = slice.length
+    ? slice.map(a => (st.view === 'grid' ? card : listRow)(a,
+        `${a.ed.slice(5).replace('-', '.')} · ${a.rank}위`)).join('')
+    : '<div class="empty-box">조건에 맞는 기사가 없습니다.</div>';
+  pager(pg, st.page, pages, p => { st.page = p; draw(); });
+  panels();
+}
+
+q.addEventListener('input', () => { st.q = q.value; st.page = 1; draw(); });
+vGrid.onclick = () => { st.view = 'grid'; draw(); };
+vList.onclick = () => { st.view = 'list'; draw(); };
+reset.onclick = () => {
+  st = { ...st, ed: '', topic: '', range: '', ent: '', sort: 'new', q: '', page: 1 };
+  q.value = ''; draw();
+};
+const p = new URLSearchParams(location.search);
+if (p.get('date')) st.ed = p.get('date');
+if (p.get('q')) { st.q = p.get('q'); q.value = st.q; }
+draw();
+</script>
+</body></html>

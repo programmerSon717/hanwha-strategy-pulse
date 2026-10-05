@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Strategy Pulse</title>
+<meta name="description" content="금융·전략 뉴스 수집·선별 파이프라인 실시간 대시보드">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='19' font-size='19'>📡</text></svg>">
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="stylesheet" href="assets/app.css">
+</head><body>
+
+<main class="wrap">
+  <section class="kpis" id="kpis"></section>
+
+  <div class="home">
+    <!-- ① Top10 발행 (레퍼런스 '리서치' 자리) -->
+    <section class="c1">
+      <h2 class="sec-h"><a href="top10.html">Top10 발행 <span class="arr">→</span></a></h2>
+      <div id="heroWrap"></div>
+      <div class="dots" id="heroDots"></div>
+      <div class="mini" id="mini"></div>
+      <div class="box-note" id="latestEdition"></div>
+    </section>
+
+    <!-- ② 수집 기사 (레퍼런스 '최신정보' 자리) -->
+    <section class="c2">
+      <h2 class="sec-h"><a href="articles.html">수집 기사 <span class="arr">→</span></a></h2>
+      <div class="cal" id="cal"></div>
+      <div class="feed" id="feed"></div>
+      <h3 class="sub-h">주요이슈</h3>
+      <div class="feed" id="keyFeed"></div>
+    </section>
+
+    <!-- ③ 파이프라인 (레퍼런스 '자산시세' 자리) -->
+    <section class="c3">
+      <h2 class="sec-h"><a href="pipeline.html">파이프라인 <span class="arr">→</span></a></h2>
+      <div class="side" id="healthSide"></div>
+      <div class="side" id="topicSide"></div>
+      <div class="side" id="dropSide"></div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+import { load, header, footer, esc, fmtDate, fmtFull, ago, num, grad, plain,
+         icon } from './assets/app.js';
+
+header('index.html');
+const [sum, top10, arts, pipe] = await Promise.all(
+  ['summary', 'top10', 'articles', 'pipeline'].map(load));
+footer(sum.generated_at);
+
+/* ── 지표 ── */
+const C = sum.counts, H = { ok: '정상', warn: '지연', down: '중단' }[sum.health];
+kpis.innerHTML = [
+  ['가동 상태', `<span class="dot ${sum.health}"></span> ${H}`,
+   `마지막 판정 ${ago(sum.last.judged)}`],
+  ['수집 누적', num(C.seen), `마지막 ${ago(sum.last.seen)}`],
+  ['판정 누적', num(C.judged), `통과 ${num(C.published)}건`],
+  ['발행 기사', num(C.published), `게시 중 ${num(C.live)}건`],
+  ['Top10 누적', num(C.top10), `${top10.length}개 발행판`],
+  ['오늘 기사', num(C.today_published), sum.today.replace(/-/g, '.')],
+].map(([k, v, d]) => `<div class="kpi"><div class="k">${k}</div>
+  <div class="v" style="display:flex;align-items:center;gap:9px">${v}</div>
+  <div class="d">${esc(d)}</div></div>`).join('');
+
+/* ── ① 캐러셀: 가장 최근 발행판의 기사들 ── */
+const ed = top10[0];
+const heroItems = (ed?.items || []).slice(0, 5);
+let hi = 0;
+function drawHero() {
+  if (!heroItems.length) {
+    heroWrap.innerHTML = '<div class="empty-box">아직 발행판이 없습니다.</div>';
+    return;
+  }
+  const a = heroItems[hi];
+  heroWrap.innerHTML = `
+    <a class="hero" style="${grad(a.topic)}" href="${esc(a.url)}"
+       target="_blank" rel="noopener">
+      <span class="badge">${esc(ed.date.replace(/-/g, '.'))} 발행</span>
+      ${heroItems.length > 1 ? `
+        <button class="hero-nav l" data-d="-1" aria-label="이전">‹</button>
+        <button class="hero-nav r" data-d="1" aria-label="다음">›</button>` : ''}
+      <h3>${esc(a.title)}</h3>
+      <div class="meta"><span class="av" style="background:rgba(255,255,255,.22)">
+        ${icon(a.topic_name)}</span>${esc(plain(a.topic_name) || '미분류')}
+        · ${esc(fmtDate(a.origin_at))}</div>
+    </a>`;
+  heroWrap.querySelectorAll('.hero-nav').forEach(b => b.onclick = e => {
+    e.preventDefault(); e.stopPropagation();
+    hi = (hi + +b.dataset.d + heroItems.length) % heroItems.length;
+    drawHero(); drawDots();
+  });
+}
+function drawDots() {
+  heroDots.innerHTML = heroItems.map((_, i) =>
+    `<i class="${i === hi ? 'on' : ''}" data-i="${i}"></i>`).join('');
+  heroDots.querySelectorAll('i').forEach(d => d.onclick = () => {
+    hi = +d.dataset.i; drawHero(); drawDots();
+  });
+}
+drawHero(); drawDots();
+if (heroItems.length > 1) setInterval(() => {
+  hi = (hi + 1) % heroItems.length; drawHero(); drawDots();
+}, 7000);
+
+mini.innerHTML = (ed?.items || []).slice(5, 8).map(a => `
+  <a href="${esc(a.url)}" target="_blank" rel="noopener">
+    <div class="thumb" style="${grad(a.topic)}">
+      <span class="t-main">${esc(a.title)}</span></div>
+    <p>${esc(a.title)}</p></a>`).join('');
+
+latestEdition.innerHTML = ed ? `<h4>최근 발행판</h4>
+  <time>${esc(ed.date.replace(/-/g, '.'))} · ${ed.count}건</time>
+  <p>${esc(ed.items.map(i => plain(i.topic_name)).filter(Boolean)
+      .filter((v, i, s) => s.indexOf(v) === i).join(' · '))}</p>` : '';
+
+/* ── ② 캘린더 + 피드 ── */
+const byDay = {};
+arts.forEach(a => { const d = (a.origin_at || '').slice(0, 10);
+  if (d) (byDay[d] ||= []).push(a); });
+const today = sum.today;
+let cur = new Date(today + 'T00:00:00+09:00'), picked = today;
+
+function drawCal() {
+  const y = cur.getFullYear(), m = cur.getMonth();
+  const first = new Date(y, m, 1), days = new Date(y, m + 1, 0).getDate();
+  const pad = first.getDay();
+  const dow = ['일', '월', '화', '수', '목', '금', '토'];
+  let cells = dow.map((d, i) =>
+    `<div class="dow ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${d}</div>`).join('');
+  for (let i = 0; i < pad; i++) cells += '<div></div>';
+  for (let d = 1; d <= days; d++) {
+    const iso = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const n = (byDay[iso] || []).length;
+    cells += `<button class="cal-d ${iso === picked ? 'on' : ''} ${n ? '' : 'off'}"
+      data-d="${iso}" ${n ? '' : 'disabled'}>${d}
+      ${n ? `<small>${n}</small>` : '<small>&nbsp;</small>'}</button>`;
+  }
+  cal.innerHTML = `
+    <div class="cal-h"><b>${y}년 ${m + 1}월</b>
+      <span class="today">${picked === today ? '오늘' : picked.slice(5).replace('-', '.')}</span>
+      <span class="mv"><button data-mv="-1">‹</button><button data-mv="1">›</button></span>
+    </div><div class="cal-g">${cells}</div>`;
+  cal.querySelectorAll('[data-mv]').forEach(b => b.onclick = () => {
+    cur.setMonth(cur.getMonth() + +b.dataset.mv); drawCal();
+  });
+  cal.querySelectorAll('.cal-d[data-d]').forEach(b => b.onclick = () => {
+    picked = b.dataset.d; drawCal(); drawFeed();
+  });
+}
+function line(a) {
+  return `<a class="feed-item" href="${esc(a.url)}" target="_blank" rel="noopener">
+    <span class="kind">${a.top10_date ? 'Top10' : '수집'}</span>
+    <span><span class="ttl">${esc(a.title)}</span>
+      <span class="sub"><span class="av" style="${grad(a.topic)};width:18px;height:18px;font-size:10px">
+        ${icon(a.topic_name)}</span>${esc(plain(a.topic_name) || '미분류')}
+        <span class="tag">${esc(a.event_type || '일반')}</span>
+        <time>${esc(fmtFull(a.origin_at))}</time></span></span></a>`;
+}
+function drawFeed() {
+  const list = (byDay[picked] || []).slice(0, 14);
+  feed.innerHTML = list.length ? list.map(line).join('')
+    : '<div class="empty-box">이 날짜에는 발행된 기사가 없습니다.</div>';
+}
+drawCal(); drawFeed();
+keyFeed.innerHTML = arts.filter(a => a.key_issue).slice(0, 6).map(line).join('')
+  || '<div class="empty-box">주요이슈가 없습니다.</div>';
+
+/* ── ③ 사이드 ── */
+healthSide.innerHTML = `<h4>가동 현황</h4>` + [
+  ['수집', sum.last.seen], ['판정', sum.last.judged], ['발행', sum.last.published],
+].map(([k, v]) => `<div class="side-row"><span class="nm"><b>${k}</b>
+    <span>${esc(fmtFull(v))}</span></span>
+  <span class="rt"><span class="pill ${v ? 'up' : 'flat'}">${esc(ago(v))}</span></span>
+  </div>`).join('');
+
+topicSide.innerHTML = `<h4>토픽별 발행</h4>` + sum.topics.map(t => `
+  <div class="side-row">
+    <span class="av" style="${grad(t.id)}">${icon(t.name)}</span>
+    <span class="nm"><b>${esc(plain(t.name))}</b><span>${esc(t.id)}</span></span>
+    <span class="rt"><b style="font-size:15px;color:var(--ink)">${num(t.n)}</b></span>
+  </div>`).join('');
+
+dropSide.innerHTML = `<h4>제외 사유 (최근)</h4>` + pipe.drops.slice(0, 7).map(d => `
+  <div class="side-row"><span class="nm"><b>${esc(d.reason)}</b></span>
+    <span class="rt"><span class="pill flat">${num(d.n)}</span></span></div>`).join('');
+</script>
+</body></html>
