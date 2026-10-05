@@ -98,7 +98,7 @@ class Settings:
     #
     # 30(FLOOR_MIN_SCORE)으로 올리면 28건이 더 잘리는데, 그중에는 메트라이프
     # K-ICS 자본관리·하나금융 자사주 소각·최태원 지배력 방어처럼 **기준에 맞는**
-    # 기사가 섞여 있다. 그래서 Top10 의 보장석 하한(30)과 일부러 다르게 둔다 —
+    # 기사가 섞여 있다. 그래서 Top10 의 최소배정 하한(30)과 일부러 다르게 둔다 —
     # 일반 탭은 넓게 담고, Top10 에서 좁히는 구조다.
     general_fit_threshold: int = int(os.getenv("GENERAL_FIT_THRESHOLD", "20"))
 

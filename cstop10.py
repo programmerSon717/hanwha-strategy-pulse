@@ -112,6 +112,24 @@ def _stem_overlap(ta: set, tb: set, minlen: int = 2) -> bool:
     return _stem_hits(ta, tb, minlen) > 0
 
 
+# 기사 제목에 흔한 말들. 이게 겹치는 건 같은 사건이라는 증거가 못 된다.
+# 반대로 이 목록 **밖**의 긴 낱말(스테이블코인·애큐온·포르테그라·타임월드…)이
+# 겹치면 같은 사건일 가능성이 매우 높다.
+_GENERIC_WORDS = {
+    "금융", "사업", "전략", "시장", "추진", "확대", "강화", "검토", "논의",
+    "도입", "관리", "서비스", "투자", "경쟁", "규제", "실적", "계획", "발표",
+    "지원", "협력", "체계", "구조", "방안", "대응", "개선", "성장", "진출",
+    "가능성", "본격화", "가시화", "전환", "부문", "기업", "국내", "해외",
+    "보험", "증권", "은행", "그룹", "계열사", "업계", "당국", "정부",
+}
+
+
+def _distinctive(words: set) -> set:
+    """흔한 말을 뺀, 그 사건을 특정하는 낱말들."""
+    return {w for w in words
+            if len(w) >= 3 and w not in _GENERIC_WORDS and not w.isdigit()}
+
+
 def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
           strict: bool = False) -> bool:
     """두 기사가 같은 사건인가. **신호를 합산해서** 판정한다.
@@ -158,8 +176,38 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
     # 전부 빼면 "애큐온캐피탈" 과 "애큐온저축은행" 같은 **서로 다른** 회사명이
     # 사라져 어간 비교 기회를 잃는다. 같은 딜의 두 기사가 그렇게 갈렸다.
     names = {events._norm(x) for x in inter}
+
+    # **교집합 회사명으로 시작하는 낱말까지 뺀다.**
+    # 엔티티가 '카카오' 로 정규화되면 제목의 '카카오뱅크' 는 names 와 글자가
+    # 달라 안 지워졌다. 그래서 같은 회사 이름이 어간 겹침(+1)과 희귀 낱말(+1)로
+    # 두 번 계산돼, 서로 다른 카카오뱅크 기사 두 건이 같은 사건으로 묶였다
+    # (2026-10-05). 회사명은 이미 엔티티 신호로 세었으니 여기서 또 세면 안 된다.
+    #
+    # '애큐온캐피탈' vs '애큐온저축은행' 은 여전히 남는다 — 그때 교집합은
+    # '한화생명' 이고 애큐온* 은 거기서 시작하지 않는다.
+    def _strip(toks):
+        return {w for w in toks
+                if not any(w.startswith(n) for n in names if n)}
+
+    # 어간 겹침에는 회사명을 **남긴다**(기존 동작). '애큐온캐피탈' 과
+    # '애큐온저축은행' 처럼 회사명 자체가 같은 딜을 가리키는 경우가 있고,
+    # 틀렸을 때의 대가가 비대칭이라 묶는 쪽으로 기운다 — 잘못 묶으면 기사
+    # 하나가 빠질 뿐이고, 못 묶으면 같은 뉴스가 3~4건 실린다.
     hits = _stem_hits(ta - names, tb - names)
     score += 2 if hits >= 2 else (1 if hits else 0)
+
+    # **희귀하고 구체적인 낱말이 겹치면 그것만으로 강한 증거다.**
+    # 교보생명 스테이블코인 건이 아주경제·신아일보 두 기사로 Top10 에 나란히
+    # 실렸다(2026-10-05). 엔티티 1점 + 공통낱말 1점 = 2점으로 문턱(3)에 못
+    # 미쳤는데, 겹친 낱말이 하필 '스테이블코인' 이었다. 모델이 사건 종류를
+    # 서로 다르게(other / partnership) 적어 그 신호도 못 받았다.
+    #
+    # 흔한 말(금융·추진·강화…)은 _GENERIC_WORDS 로 빼므로 과잉 병합은 없다.
+    # 희귀 낱말 가산점에서는 회사명을 뺀다 — 그건 이미 엔티티 신호로 세었다.
+    # 안 빼면 '카카오뱅크' 하나로 어간 겹침과 희귀 낱말을 **두 번** 받아,
+    # 서로 다른 카카오뱅크 기사가 같은 사건으로 묶인다(2026-10-05).
+    if _distinctive(_strip(ta) & _strip(tb)):
+        score += 1
 
     if strict:
         # **과거 14일치 전체와 비교할 때 쓰는 엄격 모드.**
@@ -416,11 +464,11 @@ def select(rows: list, count: int | None = None, store=None,
     cat_used: dict[str, int] = {}
     picked, deferred = [], []
 
-    # 최소 보장석을 **먼저** 채운다. 점수 경쟁에 맡기면 영영 못 들어온다.
+    # 범주별 최소 1자리을 **먼저** 채운다. 점수 경쟁에 맡기면 영영 못 들어온다.
     reserved_keys = set()
     for catg, floor in csfit.CATEGORY_FLOOR.items():
         got = 0
-        # 그 범주에서 **점수가 높은 순**으로 본다. 보장석은 한 자리뿐이라
+        # 그 범주에서 **점수가 높은 순**으로 본다. 최소배정은 한 자리뿐이라
         # 아무거나가 아니라 그 범주 최고점이 들어가야 한다.
         _cands = sorted(
             (x for x in normal
@@ -452,7 +500,7 @@ def select(rows: list, count: int | None = None, store=None,
             h = ents[0] if ents else (r[K_PRI] or "_")
             used[h] = used.get(h, 0) + 1
             got += 1
-            print(f"[cstop10] {catg} 보장석: {(r[K_HEAD] or '')[:40]}")
+            print(f"[cstop10] {catg} 최소배정: {(r[K_HEAD] or '')[:40]}")
 
     for sc, r in pr_pick + normal:
         if r[K_KEY] in reserved_keys:
@@ -469,7 +517,7 @@ def select(rows: list, count: int | None = None, store=None,
             deferred.append((sc, r))
             continue
         # **최종 안전장치 — 이미 뽑은 것과 같은 사건이면 넣지 않는다.**
-        # 앞 단계에서 접었더라도 보장석·deferred 경로로 들어올 수 있다.
+        # 앞 단계에서 접었더라도 최소배정·deferred 경로로 들어올 수 있다.
         # 10건은 서로 다른 사건이어야 한다(2026-10-02 사용자 지정).
         if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
                      r[K_ETYPE] if len(r) > K_ETYPE else "",
@@ -841,7 +889,7 @@ def topup(picked: list, rows: list, store, now: float, want: int,
     Top10 에 들어갈 만한 걸로 부족한 걸 채워 넣어."
 
     **창을 넓혀 다시 뽑는 것과 다르다.** 다시 뽑으면 후보가 늘면서 범주 상한·
-    보장석 경쟁이 달라져 오히려 줄어든다(실측: 24h 9건 → 60h 6건). 여기서는
+    최소배정 경쟁이 달라져 오히려 줄어든다(실측: 24h 9건 → 60h 6건). 여기서는
     오늘 뽑은 것을 그대로 두고 **모자란 수만큼만** 앞날에서 더한다.
 
     기준은 그대로다 — 같은 사건 금지, A팀 기공유 제외, 범주·엔티티 상한,
@@ -1077,7 +1125,7 @@ async def run(client, store, dry_run: bool | None = None,
 
     # 10건이 안 차면 **전날 기사에서 부족분만 채운다** (2026-10-05 사용자 지정).
     #
-    # 창을 넓혀 통째로 다시 뽑던 방식은 버렸다. 후보가 늘면 범주 상한·보장석
+    # 창을 넓혀 통째로 다시 뽑던 방식은 버렸다. 후보가 늘면 범주 상한·최소배정
     # 경쟁이 달라져 오히려 줄었다(실측: 24h 9건 → 60h 6건). 오늘 뽑은 것은
     # 그대로 두고 모자란 수만큼만 하루씩 앞으로 가며 더한다.
     #
