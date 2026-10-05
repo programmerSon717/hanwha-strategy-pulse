@@ -81,15 +81,19 @@ def _parse_published(html_text: str) -> float | None:
                 # 그래서 **같은 페이지의 평문 날짜와 대조한다.** ISO 의 시·분이
                 # 평문과 같으면 그 ISO 는 현지시각을 적은 것이므로 KST 로 읽는다.
                 naive = t.replace(tzinfo=None)
+                # 월·일·시를 1~2자리 모두 받는다. 예전엔 2자리만 받아
+                # '2026.10.5 4:10' 처럼 적는 페이지를 놓쳤다(2026-10-05 감사).
                 if re.search(
-                        rf"{naive.year}[.\-/]\s*{naive.month:02d}[.\-/]\s*"
-                        rf"{naive.day:02d}[^\d]{{1,4}}{naive.hour:02d}:{naive.minute:02d}",
+                        rf"{naive.year}[.\-/]\s*0?{naive.month}[.\-/]\s*"
+                        rf"0?{naive.day}[^\d]{{1,4}}0?{naive.hour}:{naive.minute:02d}",
                         html_text):
                     ts = naive.replace(tzinfo=KST).timestamp()
             else:
                 y, mo, d, hh, mm = (int(x) for x in g)
                 ts = _dt.datetime(y, mo, d, hh, mm, tzinfo=KST).timestamp()
-            # 마지막 안전장치 — 기사 발행시각이 미래일 수는 없다.
+            # 마지막 안전장치 — 기사 발행시각이 **지금보다** 미래일 수 없다.
+            # (수집이 발행 9시간 뒤에 돌면 now 기준으로는 안 걸리므로, 위의
+            #  평문 대조가 1차 방어이고 이건 2차다.)
             if ts > _dt.datetime.now(KST).timestamp():
                 continue
             return ts
@@ -201,6 +205,18 @@ async def main():
             # 같은 사건 판정을 걸었더니 교보생명 악사손보 인수(7번)가 한화·교보
             # 저축은행 인수(1번)와 묶여 떨어졌다 — 서로 다른 딜이다(2026-10-05).
             # 무엇을 실을지는 고른 사람이 정한다. 도구는 형식만 맞춘다.
+            # **창 밖 기사는 경고한다.** 이 경로엔 창 검사가 없어서 10/5 판에
+            # 보충 하한을 21시간 넘긴 기사가 실렸다(2026-10-05 감사).
+            # 사람이 고른 목록이라 빼지는 않되, 무엇이 범위 밖인지는 알려준다.
+            _since, _until, _ = K.window(asof)
+            _lo = _since - settings.cs_top10_fill_days * 86400
+            _o = origin or asof
+            if not (_lo < _o <= _until):
+                _d = datetime.fromtimestamp(_o, KST)
+                _ls = datetime.fromtimestamp(_lo, KST)
+                _us = datetime.fromtimestamp(_until, KST)
+                print(f"       ⚠️ 창 밖 — 기사 {_d:%m-%d %H:%M} / "
+                      f"허용 {_ls:%m-%d %H:%M}~{_us:%m-%d %H:%M}")
             picked.append((fit, _row(data, real, origin or asof, text)))
 
     if not picked:

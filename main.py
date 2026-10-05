@@ -191,6 +191,11 @@ def importance_floor(category: str) -> int:
 
 
 # 🏢 한화그룹 탭 라우팅 가드용. csfit.RULES 의 '한화' 패턴과 같은 말들이다.
+# 제목의 **주어**가 규제기관이고 행위가 감독·제재·검토인가.
+_REGULATOR_LEAD_RE = re.compile(
+    r"^(금융위|금융위원회|금감원|금융감독원|공정위|공정거래위원회|감사원"
+    r"|국회입법조사처|금융당국|당국)\s*[,，]?")
+
 _HANWHA_RE = re.compile(r"한화|김승연|김동관|김동원|김동선|캐롯|피플라이프|갤러리아|애큐온")
 
 
@@ -641,6 +646,24 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             print(f"[본문불가] {item.source} {item.title[:44]}")
             continue
 
+        # **기사 발행시각이 수집시각보다 미래일 수는 없다.**
+        # insjournal 8건이 최대 8.8시간 미래로 기록돼 있었다 — 한국시각에
+        # Z(UTC)를 붙여 적는 매체를 그대로 믿어 9시간이 밀린 것이다
+        # (2026-10-05 감사). 그 값으로 창 판정과 인스턴트뷰 라벨이 둘 다 틀어진다.
+        #
+        # 9시간 안팎이면 그 밀림으로 보고 되돌린다. 그보다 크면 값을 못 믿으니
+        # 비운다 — 비면 is_stale 이 '날짜 불명'으로 보고 통과시키고, Top10 은
+        # origin_at 없는 행을 창 밖으로 친다.
+        if item.published_at:
+            _skew = item.published_at - time.time()
+            if 8 * 3600 < _skew < 10 * 3600:
+                item.published_at -= 9 * 3600
+                print(f"[시각보정] +9h 밀림 되돌림 | {item.title[:40]}")
+            elif _skew > 0:
+                print(f"[시각불명] 발행시각이 미래({_skew/3600:.1f}h) — 비움 | "
+                      f"{item.title[:36]}")
+                item.published_at = None
+
         # ── STEP 5: Event Deduplication / Clustering (§21) ──
         title_for_event = data.get("title_ko") or item.title
         dup_fp = event_index.match(data, title_for_event)
@@ -694,6 +717,31 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             # 됐다. Top10 은 primary_topic 을 읽으므로 탭은 고쳐졌는데 Top10
             # 라벨은 [한화그룹] 그대로였다(2026-10-05 감사).
             data["primary_topic"] = alt
+        # **규제기관이 주체면 ⚖️ 규제·정책이 먼저다.**
+        # "금융위, 토스뱅크 반값 엔화 거래 취소 적법성 검토 착수" 가 🔎 경쟁사
+        # 탭에 올라갔다(2026-10-05 감사). 제목의 주어가 금융위·금감원·공정위이고
+        # 행위가 감독·제재·검토면 그건 규제 기사다. 토픽 정의상 regulation_policy
+        # 는 priority 4, competitors_bigtech 는 5 라 규제가 앞선다.
+        _t = data.get("title_ko") or item.title or ""
+        if topic != "regulation_policy" and _REGULATOR_LEAD_RE.match(_t.strip()):
+            print(f"[탭보정] {topic} → regulation_policy | {_t[:40]}")
+            topic = "regulation_policy"
+            data["primary_topic"] = topic
+
+        # **한화가 거래 상대방일 뿐이면 🏢 한화그룹 탭이 아니다.**
+        # "BNK경남은행, 한화오션과 손잡고…" 가 한화그룹 탭에 올라갔다. 제목의
+        # 주어가 한화가 아니면 §8("기사의 실질적 핵심이 한화")을 못 채운다.
+        if topic == "hanwha_group":
+            _head = _t.split(",")[0].split("…")[0].strip()
+            if _head and not _HANWHA_RE.search(_head):
+                _alt2 = next((_topics.normalize_topic(c)
+                              for c in (data.get("secondary_topics") or [])
+                              if _topics.normalize_topic(c) != "hanwha_group"), "")
+                _alt2 = _alt2 or "insurance_finance"
+                print(f"[탭보정] 한화가 주어 아님 → {_alt2} | {_t[:40]}")
+                topic = _alt2
+                data["primary_topic"] = topic
+
         # 일반 기사는 Primary Topic 하나에만 게시한다. 여러 탭에 복제하지 않는다.
         data["category"] = topic
         data["headline"] = data.get("title_ko") or item.title
