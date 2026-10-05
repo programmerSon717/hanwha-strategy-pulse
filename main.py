@@ -24,6 +24,7 @@
 """
 import asyncio
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -188,8 +189,22 @@ def importance_floor(category: str) -> int:
     return settings.min_importance
 
 
+# 🏢 한화그룹 탭 라우팅 가드용. csfit.RULES 의 '한화' 패턴과 같은 말들이다.
+_HANWHA_RE = re.compile(r"한화|김승연|김동관|김동원|김동선|캐롯|피플라이프|갤러리아|애큐온")
+
+
+# 소급 수집(--backfill) 중인가. 켜지면 나이 제한을 보지 않는다.
+#
+# 소급 수집은 구간(after:/before:)으로 이미 날짜를 한정하고, 수집기가 pubDate 로
+# 한 번 더 거른다. 그 위에 '24시간보다 오래되면 버린다'를 또 걸면 **전부** 걸린다 —
+# 283건 중 265건이 그렇게 날아갔다(2026-10-05).
+BACKFILL_MODE = False
+
+
 def is_stale(item: NewsItem) -> bool:
     """설정한 시간보다 오래된 기사인가. 날짜 불명은 최신으로 본다(공지 등)."""
+    if BACKFILL_MODE:
+        return False
     limit = age_limit_hours(item)
     if not limit or item.published_at is None:
         return False
@@ -356,11 +371,36 @@ async def _summarize_ahead(items: list[NewsItem],
     return out
 
 
+
+def backfill_queries(limit: int | None = None) -> list[str]:
+    """소급 수집에 쓸 검색어. **상시 수집과 같은 질의를 쓴다.**
+
+    settings.regulation_sources 가 곧 경전실 기준이다 — 과장님이 주신 키워드
+    74개와 추천 서칭 순서로 만든 구글뉴스 질의 목록이고, 상시 수집이 매일
+    그걸로 돈다. 소급만 다른 검색어를 쓰면 **기준이 두 벌이 된다.**
+    (예전엔 엔티티 목록으로 따로 만들었다 — 그래서 상시와 결과가 달랐다.)
+
+    `when:Nd` 는 떼어낸다. 소급은 after:/before: 로 구간을 잡으므로 상대 날짜
+    연산자가 같이 있으면 서로 충돌한다.
+    """
+    import re as _re
+    limit = limit or int(os.getenv("BACKFILL_QUERIES", "0")) or None
+    out, seen = [], set()
+    for row in settings.regulation_sources:
+        q = _re.sub(r"\s*when:\d+[dhm]", "", row[1]).strip()
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        out.append(q)
+    return out[:limit] if limit else out
+
+
 async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: bool,
                         dry_run: bool = False):
     stats: dict[str, int] = {}
     # BSP 판정 카운터 (§35 집계 로깅)
-    rejected = below = stored_only = clustered = paywalled = 0
+    rejected = below = stored_only = clustered = paywalled = lowconf = 0
+    swapped = 0
     event_index = events.EventIndex()
     key_issue_count = store.key_issues_since(time.time() - 24 * 3600)
     budget = settings.run_budget_sec
@@ -513,22 +553,63 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             print(f"[저장만] score {score} {item.title[:48]}")
             continue
 
-        # ── 유료기사는 내보내지 않는다 (2026-10-02 지정 · 2026-10-05 일반 탭까지 확대) ──
+        # ── 유료기사는 **같은 사건의 무료 매체 기사로 갈아탄다** ──
         #
-        # 전문을 못 읽는 링크는 팀에 쓸모가 없다. Top10 에는 같은 사건의 다른
-        # 매체로 갈아타는 관문(_fetchable)이 있는데 일반 탭에는 없어서
-        # 딜사이트 기사가 그대로 나갔다(2026-10-05, msg 384).
+        # 2026-10-05 사용자 지정: "거긴 유료기사니까 다른 무료기사 사이트에서
+        # 똑같은 내용 있는 거 찾아와서 대체해."
         #
-        # **Event 등록 전에 거른다.** 등록한 뒤 거르면 같은 사건을 다룬 무료
-        # 매체 기사가 뒤늦게 들어와도 '중복 Event' 에 막혀 영영 못 나간다.
-        # 여기서 빠지면 무료 매체 쪽이 대표가 되어 정상 발행된다.
+        # **막는 게 아니라 바꾼다.** 딜사이트·더벨·인베스트조선·연합인포맥스는
+        # 경전실이 실제로 공유하는 딜 전문지이고 Source 목록에도 들어 있다
+        # (9/11~9/22 공유 96건 중 11건). 통째로 막으면 딜 뉴스가 사라진다.
+        # 문제는 매체가 아니라 **전문을 못 읽는 링크**를 보내는 것이다.
+        #
+        # **본문불가 관문보다 앞에 둔다.** 유료기사는 본문을 못 긁어서
+        # 모델이 confidence 를 0.5 이하로 매긴다(prompts_bsp §31). 본문불가
+        # 관문이 앞에 있으면 유료기사가 교체되기 전에 전부 떨어져
+        # '차단이 아니라 교체' 지시가 무력화된다(2026-10-05 감사).
+        # Event 등록보다도 앞이어야 한다 — 등록한 뒤 바꾸면 무료 대체
+        # 기사가 '중복 Event' 에 막힌다.
         _resolved = gnews.resolve(item.url or "", store)
         if telegraph.is_paywalled(_resolved):
+            from collectors import gnews_search as _gs
+            _alt = await _gs.free_alternative(
+                client, item.title, item.published_at, telegraph.is_paywalled,
+                store=store)
+            if _alt is None:
+                _judge(item, key, relevant=True, score=score, topic=topic,
+                       reason="유료 매체 · 무료 대체 기사 없음", dry=dry_run)
+                paywalled += 1
+                print(f"[유료·대체실패] {item.source} {item.title[:40]}")
+                continue
+            print(f"[유료→무료대체] {item.source} → {_alt.source} "
+                  f"| {item.title[:34]}")
+            # 주소·매체를 바꾸고 **본문을 다시 긁어 재요약한다.**
+            # 유료 원문은 본문이 비어 요약 품질이 낮고 confidence 도 낮다.
+            # 갈아탄 무료 기사의 본문으로 다시 요약해야 뒤의 본문불가 관문을
+            # 정상적으로 통과한다(2026-10-05 감사).
+            item.url = _alt.url
+            item.source = _alt.source
+            _paras, _ = telegraph.fetch_article(_alt.url, title=item.title)
+            if _paras:
+                item.body = "\n".join(_paras)[:6000]
+                _re_data = await _summarize_one(item)
+                if _re_data:
+                    data = _re_data
+                    score = data.get("strategic_score") or score
+                    topic = _topics.normalize_topic(data.get("primary_topic"))
+            swapped += 1
+
+        # 본문을 못 읽어 확신이 낮은 건은 **아예 내보내지 않는다**
+        # (2026-10-05 사용자 지정). 예전에는 "⚠️ 본문 접근이 제한되어 제목·요약
+        # 범위에서만 정리했습니다" 라는 꼬리말을 달아 내보냈는데, 팀 입장에서는
+        # 내용을 보증 못 하는 글이라 읽을 값이 없다. Event 등록 전에 거른다 —
+        # 등록 후 거르면 같은 사건의 본문이 열리는 기사가 '중복 Event' 에 막힌다.
+        if (data.get("confidence") or 1.0) < 0.5:
             _judge(item, key, relevant=True, score=score, topic=topic,
-                   reason="유료 매체 — 같은 사건의 무료 매체 기사를 기다린다",
+                   reason="본문 접근 실패(확신 낮음) — 본문이 열리는 기사를 기다린다",
                    dry=dry_run)
-            paywalled += 1
-            print(f"[유료제외] {item.source} {item.title[:44]}")
+            lowconf += 1
+            print(f"[본문불가] {item.source} {item.title[:44]}")
             continue
 
         # ── STEP 5: Event Deduplication / Clustering (§21) ──
@@ -561,12 +642,33 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
                 f"앞서 전한 '{prior[0][:40]}' 건의 후속입니다."
 
         # ── STEP 6: Topic Routing (§6) ──
+        #
+        # **🏢 한화그룹 탭은 기사의 실질적 핵심이 한화일 때만 쓴다** (§8).
+        # 모델이 "한화 계열사에 기회가 될 가능성" 정도만 적어도 한화 탭으로
+        # 보내는 일이 있었다 — "미국 AI 인프라 확충과 국내 기업의 기회" 가
+        # 한화그룹 탭에 올라갔다(2026-10-05 지적). 제목에 한화 신호가 없으면
+        # 보조 토픽으로 돌린다. 판단 근거는 csfit.primary_category 와 같다:
+        # "이 기사가 무엇에 대한 것인가" 는 제목이 말한다.
+        if topic == "hanwha_group" and not _HANWHA_RE.search(data.get("title_ko")
+                                                             or item.title or ""):
+            alt = ""
+            for cand in (data.get("secondary_topics") or []):
+                cand = _topics.normalize_topic(cand)
+                if cand and cand != "hanwha_group":
+                    alt = cand
+                    break
+            alt = alt or "insurance_finance"
+            print(f"[탭보정] 한화그룹 → {alt} | {(data.get('title_ko') or item.title)[:40]}")
+            topic = alt
+            # **DB 에도 반영한다.** 예전에는 지역변수 topic 만 바꿔서
+            # published.category 는 보정값, published.primary_topic 은 옛값이
+            # 됐다. Top10 은 primary_topic 을 읽으므로 탭은 고쳐졌는데 Top10
+            # 라벨은 [한화그룹] 그대로였다(2026-10-05 감사).
+            data["primary_topic"] = alt
         # 일반 기사는 Primary Topic 하나에만 게시한다. 여러 탭에 복제하지 않는다.
         data["category"] = topic
         data["headline"] = data.get("title_ko") or item.title
         data["lede"] = data.get("summary") or ""
-        if (data.get("confidence") or 1.0) < 0.5:
-            data["_low_confidence"] = True      # §31
 
         stats[topic] = stats.get(topic, 0) + 1
         annotate_origin(data, item)
@@ -645,6 +747,11 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
     if paywalled:
         print(f"[집계] 유료 매체라 제외 {paywalled}건 "
               f"— 같은 사건의 무료 매체 기사를 기다린다")
+    if lowconf:
+        print(f"[집계] 본문 접근 실패라 제외 {lowconf}건 "
+              f"— 본문이 열리는 기사를 기다린다")
+    if swapped:
+        print(f"[집계] 유료 → 무료 매체로 갈아탐 {swapped}건")
 
 
 async def recent_tg_web(client: httpx.AsyncClient, hours: int = 6) -> list[NewsItem]:
@@ -740,6 +847,29 @@ async def main():
             # 대신한다. 모듈은 남겨 두되 기본 경로에서는 부르지 않는다.
             import digest
             await digest.run(client, store, hours=digest_hours, dry_run=dry_run)
+            return
+
+        if "--backfill" in sys.argv:
+            # 지나간 날짜를 메운다. 상시 RSS 는 최신만 주므로 이때만 검색을 쓴다.
+            #   python main.py --backfill 2026-10-03T06:50 2026-10-04T06:50
+            from collectors import gnews_search
+            i = sys.argv.index("--backfill")
+            a = datetime.fromisoformat(sys.argv[i + 1]).replace(tzinfo=KST).timestamp()
+            b = datetime.fromisoformat(sys.argv[i + 2]).replace(tzinfo=KST).timestamp()
+            globals()["BACKFILL_MODE"] = True   # 나이 제한 해제 — 위 주석 참고
+            prefilter.RELAXED = True            # 신호 게이트 완화 — prefilter 주석 참고
+            qs = backfill_queries()
+            print(f"[backfill] {sys.argv[i+1]} ~ {sys.argv[i+2]} KST · 검색어 {len(qs)}개")
+            items = await gnews_search.fetch(client, qs, a, b)
+            # 지난 실행이 남긴 '봤음' 기록을 지운다 — 안 그러면 전부 건너뛴다.
+            # 발행까지 간 것은 그대로 둔다(중복 발행 방지).
+            _forgot = store.forget_unpublished(
+                [Store.make_key(it.source, it.unique_id) for it in items],
+                [it.url for it in items])
+            if _forgot:
+                print(f"[backfill] 미발행 '봤음' 기록 {_forgot}건 해제 — 다시 판정한다")
+            print(f"[backfill] 수집 {len(items)}건 — 판정·발행으로 넘긴다")
+            await process_items(client, items, warm=False, dry_run=dry_run)
             return
 
         if "--cstop10" in sys.argv:

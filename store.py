@@ -208,6 +208,35 @@ class Store:
                 (k, source, title, time.time()),
             )
 
+    def forget_unpublished(self, keys: list, urls: list) -> int:
+        """**발행되지 않은** 기사의 '봤음' 기록을 지운다. 소급 수집 재실행용.
+
+        process_items 는 나이·예산 판정보다 **먼저** mark_seen 을 한다. 그래서
+        소급 수집이 중간에 한 번 어긋나면(예: 나이 제한에 전부 걸림) 284건이
+        전부 '봤음' 으로 남아 다시 돌려도 통째로 건너뛴다(2026-10-05).
+
+        발행까지 간 것은 건드리지 않는다 — 그건 지워야 할 기억이 아니다.
+        """
+        if not keys and not urls:
+            return 0
+        with self._conn() as c:
+            pub = {r[0] for r in c.execute("SELECT key FROM published")}
+            tgt = [k for k in keys if k not in pub]
+            n = 0
+            for i in range(0, len(tgt), 400):
+                chunk = tgt[i:i + 400]
+                q = ",".join("?" * len(chunk))
+                n += c.execute(f"DELETE FROM seen WHERE key IN ({q})", chunk).rowcount
+            pub_urls = {normalize_url(r[0]) for r in
+                        c.execute("SELECT source_url FROM published") if r[0]}
+            uk = [normalize_url(u) for u in urls]
+            uk = [u for u in uk if u and u not in pub_urls]
+            for i in range(0, len(uk), 400):
+                chunk = uk[i:i + 400]
+                q = ",".join("?" * len(chunk))
+                c.execute(f"DELETE FROM seen_urls WHERE url_key IN ({q})", chunk)
+            return n
+
     def mark_seen(self, key: str, source: str, title: str):
         with self._conn() as c:
             c.execute(
@@ -444,6 +473,10 @@ class Store:
                 "   AND strategic_score >= ?"
                 f"   AND {_col} > ? AND {_col} <= ?"
                 "   AND (cs_top10_date IS NULL OR cs_top10_date='')"
+                # 본문을 못 읽어 확신이 낮은 건은 Top10 에도 올리지 않는다
+                # (2026-10-05 사용자 지정). 제목·요약만으로 정리한 글은
+                # 내용을 보증할 수 없어 Top10 에 실을 값이 없다.
+                "   AND (confidence IS NULL OR confidence >= 0.5)"
                 " ORDER BY strategic_score DESC, sent_at DESC",
                 (min_score, since_ts, until_ts),
             ).fetchall()
@@ -466,6 +499,42 @@ class Store:
                 " WHERE sent_at < ? AND sent_at >= ?"
                 "   AND headline IS NOT NULL AND headline <> ''",
                 (before_ts, since_ts)).fetchall()
+
+    def top10_article_keys(self, exclude_date: str = "") -> set:
+        """이미 어느 날짜든 Top10 에 실린 기사들의 **기사 식별키** 집합.
+
+        키는 "호스트#기사번호" 다. 같은 기사라도 봇은 구글뉴스 리디렉터를,
+        사람이 큐레이션한 행은 풀린 원문 주소를 저장해 URL 문자열 비교가
+        통하지 않는다. 엔티티 비교(_same)도 main_entities 가 빈 행에서는
+        무조건 '다른 사건' 으로 빠진다 — 실제로 뱅크샐러드 기사가 그래서
+        10/4 와 10/5 양쪽에 실렸다(2026-10-05 감사).
+
+        그래서 주소에서 기사 번호만 뽑아 맞춰 본다. 이건 엔티티·제목과
+        무관하게 **같은 기사면 반드시 걸린다.**
+        """
+        import re as _re
+        pat = _re.compile(r"idxno=(\d+)|newsId=(\w+)|/v/(\d+)|ncode=(\w+)"
+                          r"|AKR(\d+)|articles/(\d+)|key=(\w+)")
+        out = set()
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT cs_top10_date, source_url, canonical_url FROM published"
+                " WHERE cs_top10_date LIKE '____-__-__'").fetchall()
+        for d, su, cu in rows:
+            if exclude_date and d == exclude_date:
+                continue
+            for u in (su, cu):
+                if not u:
+                    continue
+                m = pat.search(u)
+                if not m:
+                    continue
+                num = next((g for g in m.groups() if g), "")
+                host = _re.sub(r"^https?://", "", u).split("/")[0]
+                host = _re.sub(r"^(www\.|m\.|view\.|news\.|biz\.)", "", host)
+                if num and "google" not in host:
+                    out.add(f"{host}#{num}")
+        return out
 
     def mark_cstop10(self, keys: list, date_str: str):
         with self._conn() as c:

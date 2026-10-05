@@ -221,6 +221,8 @@ def test_cstop10():
         def cstop10_recent_clusters(self, since): return []
         # 2026-10-05: select() 가 '창 시작 전에 일반 탭으로 나간 사건'도 본다.
         def published_clusters_before(self, before, since=None): return []
+        # 2026-10-05: select() 가 '다른 날짜 Top10 에 쓰인 기사'도 걸러낸다.
+        def top10_article_keys(self, exclude_date=""): return set()
 
     picked = cstop10.select(rows, count=10, store=S(None), now=now)
     npr = sum(1 for _, r in picked if csfit.is_pr(r[1]))
@@ -582,6 +584,8 @@ def test_due_gate():
         # 같은 가짜 store 가 다른 검사로 흘러가도 터지지 않게 둔다.
         def cstop10_recent_clusters(self, since): return []
         def published_clusters_before(self, before, since=None): return []
+        # 2026-10-05: select() 가 '다른 날짜 Top10 에 쓰인 기사'도 걸러낸다.
+        def top10_article_keys(self, exclude_date=""): return set()
 
     def at(h, m):
         return datetime(2026, 10, 2, h, m, tzinfo=KST).timestamp()
@@ -685,6 +689,15 @@ def test_paywall_gate_everywhere():
     # 관문이 Event 등록 뒤에 있으면, 무료 매체 기사가 '중복 Event' 에 막혀
     # 영영 못 나간다. 반드시 앞이어야 한다.
     check("관문이 Event 등록보다 앞", 0 < gate < step5, True)
+    # 2026-10-05: 막는 게 아니라 **같은 사건의 무료 기사로 갈아탄다.**
+    # 딜 전문지는 경전실이 실제로 공유하는 Source 라 통째로 막으면 안 된다.
+    check("무료 대체를 시도한다", "free_alternative" in src, True)
+    check("대체 실패 시에만 건너뛴다", "유료·대체실패" in src, True)
+
+    # 본문을 못 읽는 건은 ⚠️ 꼬리말을 달지 않고 아예 내보내지 않는다.
+    check("본문불가 건을 거른다", "본문불가" in src, True)
+    low = src.find('if (data.get("confidence") or 1.0) < 0.5:')
+    check("본문불가 관문도 Event 등록보다 앞", 0 < low < step5, True)
 
 
 def test_source_weight():

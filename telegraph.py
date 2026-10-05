@@ -238,7 +238,7 @@ def fetch_excerpt(url: str, timeout: float = 15) -> list[str]:
 
 def build_content(summary: str, bullets: list[str], why: str,
                   excerpt: list[str], source_url: str, source_name: str,
-                  note: str = "") -> list:
+                  note: str = "", posted_label: str = "") -> list:
     """Telegraph DOM.
 
     **페이지는 언제나 만든다.** 제목을 누르면 Instant View 로 열려야 한다는 것이
@@ -250,6 +250,22 @@ def build_content(summary: str, bullets: list[str], why: str,
     왜 전문이 없는지 한 줄로 밝힌 뒤 원문으로 보낸다.
     """
     c = []
+    # **기사 입력시각을 맨 위에 굵게 박는다** (2026-10-05 사용자 지정).
+    #
+    # telegra.ph 는 페이지 머리의 <address> 에 **페이지를 만든 시각을 UTC 로**
+    # 자동으로 박는다. createPage 에 날짜 파라미터가 없어 지우지도 바꾸지도
+    # 못한다(실측: author_name 을 넣든 빼든 빈값으로 두든 날짜는 그대로 남았다).
+    #
+    # 게다가 UTC 라서 매일 06:50 KST 에 만들면 UTC 로는 전날 21:50 이다 —
+    # 평상시에도 하루 전 날짜가 찍힌다. 그래서 **진짜 입력시각을 본문 첫 줄에
+    # 굵게** 올려 그 줄보다 먼저 읽히게 한다. 바이라인에도 같이 적는다.
+    if posted_label:
+        # 매체명은 바이라인에 이미 있다. 여기서는 시각만 — 두 번 적지 않는다.
+        # '입력' 이라고만 쓰면 telegra.ph 가 밑에 박는 생성시각과 헷갈린다
+        # (2026-10-05 지적). 무엇의 시각인지 말로 못 박는다.
+        c.append({"tag": "p", "children": [
+            {"tag": "strong", "children": [f"🕒 기사발행시각 {posted_label}"]}]})
+        c.append({"tag": "hr"})
     if excerpt:
         for t in excerpt:
             c.append({"tag": "p", "children": [t]})

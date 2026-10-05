@@ -296,6 +296,22 @@ def is_soft_pr(item) -> bool:
     return bool(_SOFT_PR.search(t))
 
 
+# 소급 수집(--backfill)에서 신호 게이트를 느슨하게 할지.
+#
+# has_signal 은 **엔티티 AND 주제어**를 둘 다 요구한다. 상시 수집에서는 맞다 —
+# 하루 수천 건이 들어오므로 모델 호출을 아껴야 하고, 놓친 기사는 다음 회차에
+# 다시 들어온다.
+#
+# 그런데 소급 수집은 다르다. 날짜가 고정돼 있어 **다음 기회가 없고**, 검색으로
+# 이미 경전실 키워드를 걸어 가져온 집합이다. 여기에 AND 게이트를 또 걸면
+# 656건 중 561건이 모델을 보지도 못하고 죽는다(2026-10-05: 10/4 Top10 이 6건에서
+# 막힌 실제 원인).
+#
+# 느슨 모드는 **엔티티만 있으면 모델에게 넘긴다.** 품질은 그대로다 — 기각 판단은
+# 어차피 모델과 csfit 점수가 한다. 잡음(말머리·홍보·연예스포츠) 필터는 그대로 건다.
+RELAXED = False
+
+
 def gate(item) -> str | None:
     """STEP 2 종합 판정. 버릴 이유 또는 None.
 
@@ -308,6 +324,12 @@ def gate(item) -> str | None:
         return r
     if is_soft_pr(item):
         return "홍보·행사(전략 없음)"
+    if RELAXED:
+        # 엔티티만 있으면 통과시킨다. 위 주석 참고.
+        text = _norm(f"{item.title} {item.body[:300]}")
+        if not _hit(text, _ENT_WORDS, _ENT_SHORT):
+            return "경전실 엔티티 없음"
+        return None
     if not has_signal(item):
         return "전략 신호 없음(모델 호출 안 함)"
     return None
