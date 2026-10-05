@@ -157,11 +157,24 @@ jobs:
             fi
             git add botstate.sqlite3
             git commit -q -m "$MSG"
-            # rebase 가 중간에 멈추면 .git 이 rebase 상태로 남아 그 뒤 회차의 commit 이
-            # 전부 실패한다. 5시간 반 동안 16회를 도는 루프라 반드시 원상복구해야 한다.
-            if ! git pull -q --rebase --autostash; then
-              git rebase --abort 2>/dev/null || true
-              echo "  [상태] rebase 실패 — 되돌리고 다음 회차에 재시도"
+            # **rebase 대신 SQL 병합.** 바이너리 DB 는 git 이 합치지 못해
+            # rebase 가 반드시 충돌하고, abort 하면 그 회차에 수집·발행한
+            # 기록이 통째로 사라진다. 사람이 로컬에서 푸시하는 동안에는
+            # 매번 일어난다(2026-10-05 실측: 봇 상태가 2시간 유실).
+            # 원격 행을 로컬에 합친 뒤 커밋을 고쳐 쓰고 올린다.
+            git fetch -q origin || true
+            if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
+              python tools/merge_state.py origin/main || true
+              git add botstate.sqlite3 || true
+              git commit -q --amend --no-edit || true
+              # 원격 커밋 위로 다시 얹는다. 코드 파일은 러너가 받은 그대로라
+              # 충돌 지점이 DB 뿐이고, 그건 위에서 이미 합쳤다.
+              git rebase -q -X ours origin/main 2>/dev/null || {
+                git rebase --abort 2>/dev/null || true
+                git reset -q --soft origin/main
+                git add botstate.sqlite3 || true
+                git commit -q -m "$MSG" || true
+              }
             fi
             if git push -q; then
               echo "  [상태] 발행 이력 커밋·푸시 완료"
@@ -373,7 +386,13 @@ jobs:
             fi
             git add botstate.sqlite3
             git commit -m "chore: 발행 이력 갱신 [skip ci]"
-            git pull --rebase --autostash || true
+            # **rebase 대신 SQL 병합.** 바이너리 DB 는 git 이 못 합쳐서
+            # rebase 가 반드시 충돌하고, abort 하면 그 회차 기록이
+            # 통째로 사라진다(2026-10-05 실측: 2시간 유실).
+            git fetch -q origin || true
+            python tools/merge_state.py origin/main || true
+            git add botstate.sqlite3 || true
+            git commit -q --amend --no-edit || true
             git push
           else
             echo "새 발행 없음 — 커밋 생략"
