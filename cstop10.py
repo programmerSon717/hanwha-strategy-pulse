@@ -162,7 +162,14 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
     ea, eb = ents_of(a_ents, a_title), ents_of(b_ents, b_title)
     inter = ea & eb
     if not inter:
-        return False
+        # **교집합이 비어도 포기하지 않는다.** 모델이 같은 사건의 엔티티를
+        # 기사마다 다르게 적는 것이 애초의 문제다. 실측: 같은 볼트온 기사가
+        # 한쪽은 {한화생명}, 다른 쪽은 {도쿄해상} 으로 적혀 Top10 초안에
+        # 둘 다 들어갔다(2026-10-05 발주자 지적).
+        # 내용이 강하게 겹칠 때만 같은 사건으로 본다.
+        if events.similarity(a_title, b_title) >= events.TITLE_SIMILARITY:
+            return True
+        return events._distinctive_overlap(a_title, b_title, ea | eb)
 
     score = 2 if len(inter) >= 2 else 1
 
@@ -1143,8 +1150,13 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
     rows = drop_stale(rows, origin_floor_day(since))
     picked = select(rows, store=store, now=asof)
     if len(picked) < want:
-        _prior = (store.cstop10_recent_clusters(since - 7 * 24 * 3600)
-                  + store.published_clusters_before(since))
+        # **일반 탭에 나간 것은 제외 근거가 아니다.** Top10 은 원래 "그날
+        # 팀에 나간 것 중의 Top10" 이다. 일반탭 발행을 기게재로 치니 창 안
+        # 후보가 거의 전부 빠지고, 보충이 며칠 전 기사를 끌어왔다
+        # (2026-10-05 발주자 지적: 10/6 판에 10/1·10/2 기사가 섞였다).
+        # 막아야 하는 것은 **같은 사건이 Top10 에 반복되는 것**이고,
+        # 그건 cstop10_recent_clusters(이전 Top10)가 담당한다.
+        _prior = store.cstop10_recent_clusters(since - 7 * 24 * 3600)
         picked = topup(picked, rows, store, asof, want, prior=_prior,
                        ignore_cat_cap=True)
     day = 24 * 3600
@@ -1156,12 +1168,13 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
                                          by_origin=by_origin)
         # 기사 발행일 하한은 여기서도 건다 — 빠져 있어 10/1 기사가
         # 10/6 판에 들어왔다(2026-10-05 감사).
-        extra = drop_stale(extra,
-                           datetime.fromtimestamp(lo, KST).strftime("%Y-%m-%d"))
+        # **하한은 창 기준으로 고정한다.** lo 기준으로 다시 계산했더니
+        # 뒤로 갈수록 느슨해져, 창 안 10/3 기사는 버리면서 보충으로 10/1
+        # 기사를 끌어오는 역전이 났다(2026-10-05 발주자 지적).
+        extra = drop_stale(extra, origin_floor_day(since))
         if not extra:
             continue
-        prior = (store.cstop10_recent_clusters(lo - 7 * day)
-                 + store.published_clusters_before(lo))
+        prior = store.cstop10_recent_clusters(lo - 7 * day)
         picked = topup(picked, extra, store, asof, want, prior=prior)
     # run() 과 같은 최후 보충. 초안과 실발행이 어긋나면 미리 검증한 의미가 없다.
     while len(picked) < want and back < settings.cs_top10_max_fill_days:
@@ -1169,11 +1182,13 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
         lo, hi = since - day * back, since - day * (back - 1)
         extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
                                          by_origin=by_origin)
-        extra = drop_stale(extra, datetime.fromtimestamp(lo, KST).strftime("%Y-%m-%d"))
+        # **하한은 창 기준으로 고정한다.** lo 기준으로 다시 계산했더니
+        # 뒤로 갈수록 느슨해져, 창 안 10/3 기사는 버리면서 보충으로 10/1
+        # 기사를 끌어오는 역전이 났다(2026-10-05 발주자 지적).
+        extra = drop_stale(extra, origin_floor_day(since))
         if not extra:
             continue
-        prior = (store.cstop10_recent_clusters(lo - 7 * day)
-                 + store.published_clusters_before(lo))
+        prior = store.cstop10_recent_clusters(lo - 7 * day)
         picked = topup(picked, extra, store, asof, want, prior=prior)
     return picked
 
@@ -1569,8 +1584,13 @@ async def run(client, store, dry_run: bool | None = None,
         #
         # 범주 상한만 푼다. **적합도 하한은 그대로 둔다** — 사용자 지시는
         # "범주 상한을 풀어서라도"였지 품질 하한을 풀라는 뜻이 아니었다.
-        _prior = (store.cstop10_recent_clusters(since - 7 * 24 * 3600)
-                  + store.published_clusters_before(since))
+        # **일반 탭에 나간 것은 제외 근거가 아니다.** Top10 은 원래 "그날
+        # 팀에 나간 것 중의 Top10" 이다. 일반탭 발행을 기게재로 치니 창 안
+        # 후보가 거의 전부 빠지고, 보충이 며칠 전 기사를 끌어왔다
+        # (2026-10-05 발주자 지적: 10/6 판에 10/1·10/2 기사가 섞였다).
+        # 막아야 하는 것은 **같은 사건이 Top10 에 반복되는 것**이고,
+        # 그건 cstop10_recent_clusters(이전 Top10)가 담당한다.
+        _prior = store.cstop10_recent_clusters(since - 7 * 24 * 3600)
         picked = topup(picked, rows, store, asof or datetime.now(KST).timestamp(),
                        want, prior=_prior, ignore_cat_cap=True)
 
@@ -1586,8 +1606,7 @@ async def run(client, store, dry_run: bool | None = None,
         print(f"[cstop10] {len(picked)}건 — {back}일 전 기사 {len(extra)}건에서 보충한다")
         # 보충 대상도 '이미 나간 사건' 검사를 받아야 한다. 기준 시점은
         # **그 기사들이 속한 날의 시작** 이다 — 그보다 전에 나간 것만 기발행이다.
-        prior = (store.cstop10_recent_clusters(lo - 7 * 24 * 3600)
-                 + store.published_clusters_before(lo))
+        prior = store.cstop10_recent_clusters(lo - 7 * 24 * 3600)
         picked = topup(picked, extra, store,
                        asof or datetime.now(KST).timestamp(), want, prior=prior)
 
@@ -1602,11 +1621,13 @@ async def run(client, store, dry_run: bool | None = None,
         lo, hi = since - day * back, since - day * (back - 1)
         extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
                                          by_origin=by_origin)
-        extra = drop_stale(extra, datetime.fromtimestamp(lo, KST).strftime("%Y-%m-%d"))
+        # **하한은 창 기준으로 고정한다.** lo 기준으로 다시 계산했더니
+        # 뒤로 갈수록 느슨해져, 창 안 10/3 기사는 버리면서 보충으로 10/1
+        # 기사를 끌어오는 역전이 났다(2026-10-05 발주자 지적).
+        extra = drop_stale(extra, origin_floor_day(since))
         if not extra:
             continue
-        prior = (store.cstop10_recent_clusters(lo - 7 * day)
-                 + store.published_clusters_before(lo))
+        prior = store.cstop10_recent_clusters(lo - 7 * day)
         before = len(picked)
         picked = topup(picked, extra, store,
                        asof or datetime.now(KST).timestamp(), want, prior=prior)
