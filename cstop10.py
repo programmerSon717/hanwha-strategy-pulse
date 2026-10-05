@@ -328,6 +328,26 @@ def _acceptable(r, picked: list) -> bool:
         for _, q in picked)
 
 
+def _coverage_of(r) -> int:
+    """그 기사가 담은 **집합의 크기.**
+
+    발주자 절대 수칙(2026-10-05): "집합개념으로 따지면 더 큰개념의 내용을
+    담고있는거만 하나만 올려." 같은 사건을 접을 때 남길 쪽은 적합도가
+    높은 쪽이 아니라 **내용을 더 많이 담은 쪽**이다. 적합도로 뽑았더니
+    '해외 M&A 볼트온 전략 강화 추세'(더 큰 집합) 대신 '…도쿄해상 주목해야'
+    가 남았다(2026-10-05 3차 감사).
+    """
+    h = r[K_HEAD] or ""
+    d = {"main_entities": [x.strip() for x in (r[K_ENT] or "").split(",")
+                           if x.strip()],
+         "event_type": r[K_ETYPE] if len(r) > K_ETYPE else "",
+         "title_ko": h}
+    try:
+        return int(events.coverage(d, h))
+    except Exception:
+        return 0
+
+
 def _fetchable(group: list, store) -> tuple | None:
     """묶음에서 **전문을 가져올 수 있는** 기사를 고른다.
 
@@ -335,9 +355,13 @@ def _fetchable(group: list, store) -> tuple | None:
     매체 기사가 묶음 안에 있으면 그걸 쓰고, 없으면 None 을 돌려준다
     (호출부가 그 사건을 통째로 건너뛴다). 2026-10-02 사용자 지정.
 
-    점수가 높은 순으로 보되, 유료 도메인은 네트워크를 타지 않고 바로 거른다.
+    **집합이 큰 순으로** 보고, 같으면 점수로 가린다. 점수 순으로 보았더니
+    읽을 수 있는 큰 집합이 묶음에 있는데도 작은 집합을 집어 올렸다 —
+    '신한은행 해킹 IP, 토스뱅크에도 접근'(집합 20) 대신 '토스뱅크·온투업체도
+    타깃'(집합 14)이 나갔다(2026-10-05 3차 감사). 집합론이 점수보다 앞선다.
+    유료 도메인은 네트워크를 타지 않고 바로 거른다.
     """
-    for sc, r in sorted(group, key=lambda x: -x[0]):
+    for sc, r in sorted(group, key=lambda x: (-_coverage_of(x[1]), -x[0])):
         url = gnews.resolve(r[K_URL] or "", store)
         if telegraph.is_paywalled(url):
             continue
@@ -368,7 +392,9 @@ def select(rows: list, count: int | None = None, store=None,
                           r[K_PRI] or "", r[K_SCORE])[0]
               + csfit.risk_bonus(r[K_HEAD] or ""))
         cur = best.get(cid)
-        if cur is None or sc > cur[0]:
+        # **집합이 큰 쪽을 대표로 둔다** (집합론 절대 수칙). 집합 크기가
+        # 같을 때만 적합도로 가린다.
+        if cur is None or (_coverage_of(r), sc) > (_coverage_of(cur[1]), cur[0]):
             best[cid] = (sc, r)
 
     # 2차: 실제 값으로 같은 사건 재판정. 점수 높은 쪽을 남긴다.
@@ -377,7 +403,10 @@ def select(rows: list, count: int | None = None, store=None,
     # 예전엔 대표 하나만 남기고 버려서 대체할 후보가 없었다(2026-10-02).
     merged: list = []
     groups: dict[int, list] = {}
-    for sc, r in sorted(best.values(), key=lambda x: -x[0]):
+    # **집합이 큰 것부터** 넣는다. 먼저 들어간 쪽이 대표로 남으므로,
+    # 이 순서가 곧 '더 큰 집합만 올린다' 는 수칙의 구현이다.
+    for sc, r in sorted(best.values(),
+                        key=lambda x: (-_coverage_of(x[1]), -x[0])):
         dup = -1
         for i, (sc2, r2) in enumerate(merged):
             if _same(r[K_HEAD] or "", r[K_ENT] or "", r[K_ETYPE] if len(r) > K_ETYPE else "",
@@ -511,6 +540,15 @@ def select(rows: list, count: int | None = None, store=None,
     cat_used: dict[str, int] = {}
     theme_used: dict[str, int] = {}
     picked, deferred = [], []
+
+    # **집합론 생존자만 쓴다.** 최소배정은 범주별로 도는데, 같은 사건의
+    # 더 큰 집합이 다른 범주로 분류돼 있으면 작은 쪽이 먼저 자리를 잡고
+    # 큰 쪽을 중복으로 막는다. 실측(2026-10-05 3차 감사): 'M&A·매각'
+    # 최소배정이 '토스뱅크·온투업체도 타깃 AI 해킹'(집합 작음)을 넣어,
+    # 같은 해킹 사태의 '신한은행 해킹 IP, 토스뱅크에도 접근'(집합 큼)이
+    # 밀려났다. 접기를 먼저 해 큰 쪽만 남긴다.
+    _alive = {r[K_KEY] for r in fold_by_event([r for _, r in normal])}
+    normal = [(sc, r) for sc, r in normal if r[K_KEY] in _alive]
 
     # 범주별 최소 1자리을 **먼저** 채운다. 점수 경쟁에 맡기면 영영 못 들어온다.
     reserved_keys = set()
@@ -963,6 +1001,27 @@ def article_key(url: str) -> str:
     return f"{host}#{num}"
 
 
+def fold_by_event(rows: list) -> list:
+    """같은 사건끼리 접고 **집합이 큰 쪽만** 남긴다.
+
+    보충 경로(topup/fill_in_window)는 select() 가 만든 접기 그룹을 모른 채
+    원본 후보를 다시 돈다. 그래서 본선에서 '해외 M&A 플랫폼+볼트온 추세'
+    (집합 14)가 대표로 접혔는데도, 보충이 같은 사건의 '…도쿄해상 주목해야'
+    (집합 13)를 집어 올렸다(2026-10-05 3차 감사). 집합론 절대 수칙은 보충
+    경로에도 걸려야 한다.
+    """
+    kept: list = []
+    for r in sorted(rows, key=lambda x: -_coverage_of(x)):
+        if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                     r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     q[K_HEAD] or "", q[K_ENT] or "",
+                     q[K_ETYPE] if len(q) > K_ETYPE else "")
+               for q in kept):
+            continue
+        kept.append(r)
+    return kept
+
+
 def topup(picked: list, rows: list, store, now: float, want: int,
           prior=None, ignore_cat_cap: bool = False,
           min_fit: int | None = None) -> list:
@@ -1001,8 +1060,9 @@ def topup(picked: list, rows: list, store, now: float, want: int,
             theme_used[_t] = theme_used.get(_t, 0) + 1
 
     # 적합도 + 추천 서칭 순서 가산점으로 '그나마 들어갈 만한' 순서를 만든다.
+    # **먼저 같은 사건을 접는다** — 집합이 작은 쪽을 집어 올리면 안 된다.
     scored = []
-    for r in rows:
+    for r in fold_by_event(rows):
         fit, _ = csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
                              r[K_PRI] or "", r[K_SCORE])
         scored.append((fit + TIER_BONUS.get(tier_of(r), 0), fit, r))
@@ -1173,7 +1233,7 @@ def fill_in_window(picked: list, rows: list, store, want: int,
         if _k:
             used_art.add(_k)
     scored = []
-    for r in rows:
+    for r in fold_by_event(rows):
         if any(r is q for _, q in picked):
             continue
         fit, _ = csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
