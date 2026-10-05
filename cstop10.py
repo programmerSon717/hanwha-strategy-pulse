@@ -493,6 +493,7 @@ def select(rows: list, count: int | None = None, store=None,
     cap = settings.daily_brief_max_per_entity
     used: dict[str, int] = {}
     cat_used: dict[str, int] = {}
+    theme_used: dict[str, int] = {}
     picked, deferred = [], []
 
     # 범주별 최소 1자리을 **먼저** 채운다. 점수 경쟁에 맡기면 영영 못 들어온다.
@@ -527,6 +528,8 @@ def select(rows: list, count: int | None = None, store=None,
             picked.append((sc, r))
             reserved_keys.add(r[K_KEY])
             cat_used[catg] = cat_used.get(catg, 0) + 1
+        for _t in csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or ""):
+            theme_used[_t] = theme_used.get(_t, 0) + 1
             ents = [e for e in (r[K_ENT] or "").split(",") if e]
             h = ents[0] if ents else (r[K_PRI] or "_")
             used[h] = used.get(h, 0) + 1
@@ -542,6 +545,11 @@ def select(rows: list, count: int | None = None, store=None,
         catg = csfit.primary_category(r[K_HEAD] or "", r[K_ENT] or "")
         ccap = csfit.CATEGORY_CAP.get(catg, 2)
         if cat_used.get(catg, 0) >= ccap:
+            deferred.append((sc, r))
+            continue
+        # 주제 상한 — 대표범주가 흩어져도 같은 주제가 몰리지 않게 한다.
+        _themes = csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or "")
+        if any(theme_used.get(t, 0) >= csfit.THEME_CAP[t] for t in _themes):
             deferred.append((sc, r))
             continue
         if used.get(head, 0) >= cap:
@@ -568,6 +576,8 @@ def select(rows: list, count: int | None = None, store=None,
         sc, r = got_alt
 
         cat_used[catg] = cat_used.get(catg, 0) + 1
+        for _t in csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or ""):
+            theme_used[_t] = theme_used.get(_t, 0) + 1
         used[head] = used.get(head, 0) + 1
         picked.append((sc, r))
         if len(picked) >= count:
@@ -943,12 +953,15 @@ def topup(picked: list, rows: list, store, now: float, want: int,
     cap = settings.daily_brief_max_per_entity
     used: dict[str, int] = {}
     cat_used: dict[str, int] = {}
+    theme_used: dict[str, int] = {}
     for sc, r in picked:
         ents = [e for e in (r[K_ENT] or "").split(",") if e]
         h = ents[0] if ents else (r[K_PRI] or "_")
         used[h] = used.get(h, 0) + 1
         catg = csfit.primary_category(r[K_HEAD] or "", r[K_ENT] or "")
         cat_used[catg] = cat_used.get(catg, 0) + 1
+        for _t in csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or ""):
+            theme_used[_t] = theme_used.get(_t, 0) + 1
 
     # 적합도 + 추천 서칭 순서 가산점으로 '그나마 들어갈 만한' 순서를 만든다.
     scored = []
@@ -1003,12 +1016,19 @@ def topup(picked: list, rows: list, store, now: float, want: int,
         if not ignore_cat_cap and \
                 cat_used.get(catg, 0) >= csfit.CATEGORY_CAP.get(catg, 2):
             continue
+        # **주제 상한은 범주 상한을 풀어도 지킨다.** 자리를 채우려고
+        # ignore_cat_cap 을 켜는 바람에 GA 기사가 4건 들어왔다(2026-10-05).
+        _themes = csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or "")
+        if any(theme_used.get(t, 0) >= csfit.THEME_CAP[t] for t in _themes):
+            continue
         got = _fetchable([(fit, r)], store)
         if got is None:
             continue
         picked.append(got)
         used[head] = used.get(head, 0) + 1
         cat_used[catg] = cat_used.get(catg, 0) + 1
+        for _t in csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or ""):
+            theme_used[_t] = theme_used.get(_t, 0) + 1
         added += 1
         print(f"[cstop10] 전날에서 보충: 적합{fit} {(r[K_HEAD] or '')[:40]}")
     if added:
@@ -1277,8 +1297,13 @@ async def build_draft(store, asof: float, dry_run: bool = False,
     if client is not None and not dry_run:
         try:
             await post_draft(client, store, pub, picked, asof)
-        except Exception as exc:                            # noqa: BLE001
-            print(f"[draft] 게시 실패 — {exc}")
+        except Exception:                                   # noqa: BLE001
+            # **사유를 통째로 남긴다.** 한 줄만 찍었더니 asyncio 임포트
+            # 누락(NameError)이 조용히 묻혀, 초안이 왜 안 올라가는지
+            # 한참 못 찾았다(2026-10-05).
+            import traceback
+            print("[draft] 게시 실패 —")
+            traceback.print_exc()
     return {"replaced": True, "count": n, "quality": q}
 
 
