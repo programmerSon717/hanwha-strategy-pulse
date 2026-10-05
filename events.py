@@ -313,3 +313,38 @@ def looks_incident(title: str, data: dict | None = None) -> bool:
     if data:
         text = f"{text} {data.get('lede') or ''}"
     return bool(INCIDENT_RE.search(_norm(text)))
+
+
+# ── 🚨 주요이슈로 올릴 '사건성' 판정 ───────────────────────────
+# 발주자 지적(2026-10-05): "주요이슈로 들어가는거 기준이 뭔데 지금 한화내용
+# 죄다 주요이슈로 들어가는거같은데..?"
+#
+# 실측으로 맞는 말이었다 — 주요이슈 미러 9건 중 8건이 한화 기사였다.
+# 기준이 프롬프트(STEP D)에만 있어 모델이 느슨하게 적용했고, 한화 기사는
+# 전략성 점수가 88~98 로 나와 임계값(85)을 거의 항상 넘었다. 그래서
+# "한화 + 고득점" 이 사실상 주요이슈의 기준이 돼 있었다.
+#
+# 주요이슈는 **오늘 경영진에게 바로 보고할 사건**이다. 분석·전망·협력 논의·
+# 인사는 중요해도 그 자리가 아니다. 그래서 사건 종류로 코드에서 한 번 더
+# 거른다. 모델 판정(is_key_issue)과 점수는 그대로 요구하되, 여기에 더해
+# 아래 중 하나여야 한다.
+DECISIVE_GROUPS = {"deal", "regulation", "governance"}
+
+
+def decisive(title: str, data: dict | None = None) -> bool:
+    """주요이슈에 올릴 '사건'인가.
+
+    딜·규제·지배구조이거나, 제목에 확정 신호(체결·확정·승인·제재 …)가 있으면
+    사건으로 본다. 'other'·'market'·'partnership'·'earnings'·'appointment'·
+    'product' 는 그 자체로는 아니다.
+
+    실측 적용 결과 (주요이슈 미러 9건)
+      유지: 애큐온 인수 의결·확정·본계약, 한화 KAI 지분 확보,
+            한화갤러리아 매각 검토            ← 전부 deal
+      제외: 김동원 사장 포트폴리오 재편 주도   ← other(분석)
+            한화금융 아부다비 협력 추진       ← partnership(논의)
+    """
+    group = ACTION_GROUPS.get((data or {}).get("event_type") or "other", "other")
+    if group in DECISIVE_GROUPS:
+        return True
+    return looks_material(title, data or {})
