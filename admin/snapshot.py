@@ -15,7 +15,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KST = datetime.timezone(datetime.timedelta(hours=9))
 REPO_API = "https://api.github.com/repos/programmerSon717/crypto-news-bot"
-BACKUPS = os.path.expanduser("~/Desktop/HanwhaDAPnews/backups")
+BACKUPS = os.path.expanduser("<백업 디렉터리>")
 
 
 def sh(*args, cwd=ROOT):

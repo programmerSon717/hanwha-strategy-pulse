@@ -197,20 +197,11 @@ async def main():
             print(f"  {i:>2}. 적합{fit:>3} [{data['category']:<20}] {data['headline'][:42]}")
             if origin is None:
                 print(f"       ⚠️ 발행시각을 못 찾았다 — 창 끝 시각으로 대신한다")
-            row = _row(data, real, origin or asof, text)
-            # **같은 사건이 두 번 들어가지 않게 한다.** 사람이 고른 목록이라
-            # 그대로 올린다고 봤는데, 빠진 자리를 봇이 채우면서 1번과 같은
-            # 사안이 10번에 또 들어갔다(2026-10-05: 저축은행 인수·K-ICS 50%).
-            dup = next((q for _, q in picked
-                        if K._same(row[K.K_HEAD] or "", row[K.K_ENT] or "",
-                                   row[K.K_ETYPE] or "",
-                                   q[K.K_HEAD] or "", q[K.K_ENT] or "",
-                                   q[K.K_ETYPE] or "")), None)
-            if dup is not None:
-                print(f"       ↳ 같은 사건 제외 — 앞 건과 동일: "
-                      f"{(dup[K.K_HEAD] or '')[:30]}")
-                continue
-            picked.append((fit, row))
+            # **사람이 고른 목록은 봇이 빼지 않는다.**
+            # 같은 사건 판정을 걸었더니 교보생명 악사손보 인수(7번)가 한화·교보
+            # 저축은행 인수(1번)와 묶여 떨어졌다 — 서로 다른 딜이다(2026-10-05).
+            # 무엇을 실을지는 고른 사람이 정한다. 도구는 형식만 맞춘다.
+            picked.append((fit, _row(data, real, origin or asof, text)))
 
     if not picked:
         sys.exit("발행할 것이 없습니다.")

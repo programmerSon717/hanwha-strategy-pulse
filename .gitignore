@@ -40,3 +40,7 @@ docs/
 
 # 옛 설정 백업 — 지난 값이 남아 있다
 config.py.bak*
+
+# 백업 파일 일체 — 접미사가 달라도 잡는다(과거 config.py.bak2 가 새어 나갔다)
+*.bak*
+*.backup

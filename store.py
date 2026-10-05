@@ -577,11 +577,17 @@ class Store:
             return []
         q = ",".join("?" * len(keys))
         with self._conn() as c:
+            # **후보 쿼리와 같은 관문을 건다.** 예전엔 키만 보고 그대로 꺼내서,
+            # 초안을 만든 뒤 그 기사가 다른 경로로 이미 Top10 에 실려도 06:50 에
+            # 또 나갔다. 본문 못 읽는 기사도 그대로 통과했다(2026-10-05 감사).
             rows = c.execute(
                 "SELECT key, headline, source_url, primary_topic, secondary_topics,"
                 "       strategic_score, is_key_issue, event_cluster_id, main_entities,"
                 "       lede, why_it_matters, sent_at, event_type, origin_at, text"
-                f"  FROM published WHERE key IN ({q})", keys).fetchall()
+                f"  FROM published WHERE key IN ({q})"
+                "   AND (cs_top10_date IS NULL OR cs_top10_date='')"
+                "   AND (confidence IS NULL OR confidence >= 0.5)",
+                keys).fetchall()
         order = {k: i for i, k in enumerate(keys)}
         return sorted(rows, key=lambda r: order.get(r[0], 999))
 

@@ -994,11 +994,29 @@ def quality_of(picked: list) -> float:
         fit, _ = csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
                              r[K_PRI] or "", r[K_SCORE])
         fits.append(fit)
-    return len(picked) * 1000 + sum(fits) / len(fits)
+    # 세 번째 항: **기사가 얼마나 최신인가**. 건수·적합도가 같으면 더 최신인
+    # 쪽을 쓴다. 이게 없으면 18:00 초안이 전날 기사로 10건을 채운 순간,
+    # 밤새 들어온 창내 신선 기사로 만든 04:00 초안이 영영 기각된다
+    # (2026-10-05 감사). 최대 1점이라 건수·적합도 순위는 뒤집지 못한다.
+    now = datetime.now(KST).timestamp()
+    ages = []
+    for _sc, r in picked:
+        try:
+            ages.append((now - float(r[K_ORIGIN])) / 3600)
+        except (TypeError, ValueError):
+            ages.append(48.0)
+    fresh = max(0.0, 1.0 - (sum(ages) / len(ages)) / 48.0)
+    return len(picked) * 1000 + sum(fits) / len(fits) + fresh
 
 
-def select_for(store, asof: float, by_origin: bool = True) -> list:
-    """그 발행 시각 기준으로 뽑은 결과. run() 과 같은 길을 쓴다."""
+def select_for(store, asof: float, by_origin: bool = False) -> list:
+    """그 발행 시각 기준으로 뽑은 결과. run() 과 같은 길을 쓴다.
+
+    by_origin 기본값은 **False** 다 — run() 의 평시 경로와 같아야 한다.
+    예전엔 True 여서 초안은 원문 발행시각으로, 실발행은 봇 발행시각으로
+    후보를 잘랐다. 기준이 갈리면 초안에 있던 기사가 06:50 에 사라진다
+    (2026-10-05 감사).
+    """
     since, until, _label = window(asof)
     want = settings.daily_brief_count
     rows = store.cstop10_candidates(since, until, settings.discard_threshold,
@@ -1064,6 +1082,14 @@ def draft_due(store, now: float | None = None) -> tuple[bool, str]:
         mark = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
         gap = (t - mark).total_seconds()
         if 0 <= gap < 3600:
+            # **그 회차를 이미 돌았으면 다시 돌지 않는다.** 상시 루프가 20분·
+            # 긴급 레인이 5분마다 물어봐서, 한 시간 창에 최대 12번 재생성됐다.
+            # 사용자가 말한 "총 3번"과 어긋나고 모델 호출만 낭비된다.
+            slot = f"{t:%Y-%m-%d}/{hhmm}"
+            if store is not None and store.get_setting("draft_slot") == slot:
+                return False, f"{hhmm} 회차는 이미 돌았다"
+            if store is not None:
+                store.put_setting("draft_slot", slot)
             return True, f"{hhmm} 초안 생성 시각"
     return False, "초안 생성 시각 아님"
 
@@ -1110,7 +1136,14 @@ async def run(client, store, dry_run: bool | None = None,
     _draft = store.get_top10_draft(_pub)
     if _draft and _draft[0]:
         _rows = store.rows_by_keys(_draft[0])
-        if len(_rows) == len(_draft[0]):
+        _min_ok = max(1, int(settings.daily_brief_count * 0.8))
+        if len(_rows) < _min_ok:
+            # **모자란 초안은 쓰지 않는다.** 1건짜리 초안이 그대로 나가는 것이
+            # 사용자가 막으려던 바로 그 사고다(2026-10-05 감사).
+            print(f"[cstop10] ⚠️ 초안이 {len(_rows)}건뿐({_min_ok}건 미만) — "
+                  f"버리고 새로 뽑는다")
+            _draft = None
+        elif len(_rows) == len(_draft[0]):
             _built = datetime.fromtimestamp(_draft[2], KST)
             print(f"[cstop10] 확정 초안 사용 — {len(_rows)}건 "
                   f"({_built:%m-%d %H:%M} 생성)")
