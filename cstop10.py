@@ -1067,9 +1067,9 @@ def topup(picked: list, rows: list, store, now: float, want: int,
         for _t in csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or ""):
             theme_used[_t] = theme_used.get(_t, 0) + 1
         added += 1
-        print(f"[cstop10] 전날에서 보충: 적합{fit} {(r[K_HEAD] or '')[:40]}")
+        print(f"[cstop10] 보충: 적합{fit} {(r[K_HEAD] or '')[:40]}")
     if added:
-        print(f"[cstop10] 전날 기사로 {added}건 보충 → {len(picked)}건")
+        print(f"[cstop10] {added}건 보충 → {len(picked)}건")
     return picked
 
 
@@ -1090,6 +1090,8 @@ def origin_floor_day(since: float) -> str:
     허용 폭은 창 시작일에서 cs_top10_fill_days 만큼 거슬러 간 날까지 —
     보충이 허용된 범위와 같게 둔다.
     """
+    # fill_days 가 0 이면 **창 시작일 그대로**다. 발주자 지정대로
+    # "10/5 06:50 이후 기사"만 남긴다.
     base = datetime.fromtimestamp(since, KST) - timedelta(
         days=max(0, settings.cs_top10_fill_days))
     return base.strftime("%Y-%m-%d")
@@ -1113,6 +1115,118 @@ def drop_stale(rows: list, floor_day: str) -> list:
         if day >= floor_day:
             out.append(r)
     return out
+
+
+def in_window_origin(r, since: float) -> bool:
+    """기사 **원문 발행시각**이 창 시작 이후인가.
+
+    cstop10_candidates 는 봇 수집시각으로 자르므로, 원문이 창보다 앞선
+    기사가 후보에 남는다. 발주자 지정(2026-10-05)은 원문시각 기준이다.
+    원문시각을 모르면 통과시킨다 — 모른다고 버리면 수집 지연분이 전부
+    사라진다.
+    """
+    v = r[K_ORIGIN] if len(r) > K_ORIGIN else None
+    ts = _ts(v)
+    if ts is None:
+        return True
+    if ts > 1e11:       # ms epoch 로 들어온 행이 있다
+        ts /= 1000.0
+    return ts >= since
+
+
+def drop_before_window(rows: list, since: float) -> list:
+    """원문 발행시각이 창 시작 이전인 후보를 버린다.
+
+    후보 질의는 **봇 수집시각**으로 자른다(수집 지연을 포용하려고). 그래서
+    원문이 창보다 앞선 기사가 남는다. 발주자 지정(2026-10-05): "무조건
+    10/6 06:50 에 올라가는 완성본은 10/05 기사들과 10/06 새벽 기사여야
+    한다. 10/05 06:50am 이후 시점의." 그래서 원문시각으로 한 번 더 자른다.
+    원문시각 미상은 통과시킨다.
+    """
+    keep = [r for r in rows if in_window_origin(r, since)]
+    if len(keep) != len(rows):
+        print(f"[cstop10] 원문시각 창 밖 {len(rows) - len(keep)}건 제외 "
+              f"(하한 {datetime.fromtimestamp(since, KST):%m-%d %H:%M})")
+    return keep
+
+
+def fill_in_window(picked: list, rows: list, store, want: int,
+                   prior=None, since: float | None = None) -> list:
+    """**창 안에서** 남은 자리를 채운다. 마지막 수단이다.
+
+    발주자 지정(2026-10-05): "무조건 10/6 06:50 에 올라가는 완성본은 10/05
+    기사들과 10/06 새벽 기사여야 한다. 10/05 06:50am 이후 시점의." 그래서
+    전날 보충을 닫았고(fill_days=0), 모자란 자리는 **창 밖으로 나가는 대신
+    창 안에서 상한을 풀어** 채운다.
+
+    푸는 것: 범주 상한·주제 상한·엔티티 상한·적합도 하한.
+    푸지 않는 것 — 이건 절대 수칙이라 자리를 비우더라도 지킨다:
+      · 같은 사건 두 번 금지(집합론)
+      · 이전 Top10·A팀 기공유 제외
+      · 유료/본문 미확보 기사 금지
+    """
+    if len(picked) >= want:
+        return picked
+    used_art = store.top10_article_keys() if store is not None else set()
+    for _sc, q in picked:
+        _k = article_key(q[K_URL] or "")
+        if _k:
+            used_art.add(_k)
+    scored = []
+    for r in rows:
+        if any(r is q for _, q in picked):
+            continue
+        fit, _ = csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
+                             r[K_PRI] or "", r[K_SCORE])
+        scored.append((fit + TIER_BONUS.get(tier_of(r), 0), fit, r))
+    scored.sort(key=lambda x: -x[0])
+    added = 0
+    for _rank, fit, r in scored:
+        if len(picked) >= want:
+            break
+        if shared.already_shared(r[K_HEAD] or ""):
+            continue
+        if csfit.is_crypto_tech(r[K_HEAD] or "") or csfit.is_pr(r[K_HEAD] or ""):
+            continue
+        # **기사 원문시각도 창 안이어야 한다.** 후보 질의는 봇 수집시각으로
+        # 자르므로 원문이 창 앞인 기사가 섞인다. 발주자 지정(2026-10-05):
+        # "10/05 06:50am 이후 시점의" 기사여야 한다. 상한을 풀어 자리를
+        # 채우는 경로에서 이게 빠져 05:46·06:00 기사가 들어왔다.
+        if since is not None and not in_window_origin(r, since):
+            print(f"[cstop10] 창 안 보충 제외(원문시각 창 밖): "
+                  f"{(r[K_HEAD] or '')[:36]}")
+            continue
+        _ak = article_key(gnews.resolve(r[K_URL] or "", store))
+        if _ak and _ak in used_art:
+            continue
+        # **이전 Top10 에 나간 사건은 끝까지 막는다.** 집합론 절대 수칙이라
+        # 자리를 비우는 것이 같은 사건을 두 번 싣는 것보다 낫다.
+        if prior and any(
+                _same(r[K_HEAD] or "", r[K_ENT] or "",
+                      r[K_ETYPE] if len(r) > K_ETYPE else "",
+                      h or "", e or "", t or "", strict=True)
+                for h, e, t in prior):
+            print(f"[cstop10] 창 안 보충 제외(기발행 사건): "
+                  f"{(r[K_HEAD] or '')[:36]}")
+            continue
+        if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
+                     r[K_ETYPE] if len(r) > K_ETYPE else "",
+                     q[K_HEAD] or "", q[K_ENT] or "",
+                     q[K_ETYPE] if len(q) > K_ETYPE else "")
+               for _, q in picked):
+            continue
+        got = _fetchable([(fit, r)], store)
+        if got is None:
+            continue
+        picked.append(got)
+        if _ak:
+            used_art.add(_ak)
+        added += 1
+        print(f"[cstop10] 창 안 보충(상한 해제): 적합{fit} "
+              f"{(r[K_HEAD] or '')[:40]}")
+    if added:
+        print(f"[cstop10] 창 안에서 {added}건 보충 → {len(picked)}건")
+    return picked
 
 
 def quality_of(picked: list) -> float:
@@ -1157,6 +1271,7 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
     rows = store.cstop10_candidates(since, until, settings.discard_threshold,
                                     by_origin=by_origin)
     rows = drop_stale(rows, origin_floor_day(since))
+    rows = drop_before_window(rows, since)
     picked = select(rows, store=store, now=asof)
     if len(picked) < want:
         # **일반 탭에 나간 것은 제외 근거가 아니다.** Top10 은 원래 "그날
@@ -1199,6 +1314,10 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
             continue
         prior = store.cstop10_recent_clusters(lo - 2 * day)
         picked = topup(picked, extra, store, asof, want, prior=prior)
+    # 창 밖으로 나가지 않는 대신, 창 안에서 상한을 풀어 마저 채운다.
+    picked = fill_in_window(picked, rows, store, want,
+                            prior=store.cstop10_recent_clusters(
+                                since - 2 * day), since=since)
     return picked
 
 
@@ -1539,6 +1658,7 @@ async def run(client, store, dry_run: bool | None = None,
                                         settings.discard_threshold,
                                         by_origin=by_origin)
         rows = drop_stale(rows, origin_floor_day(since))
+        rows = drop_before_window(rows, since)
         return rows, select(rows, store=store, now=asof)
 
     # **확정된 초안이 있으면 그걸 그대로 낸다.**
@@ -1643,6 +1763,12 @@ async def run(client, store, dry_run: bool | None = None,
         if len(picked) > before:
             print(f"[cstop10] 최후 보충 — {back}일 전에서 {len(picked) - before}건 "
                   f"(총 {len(picked)}건)")
+
+    # 창 밖으로 나가지 않는 대신, 창 안에서 상한을 풀어 마저 채운다.
+    picked = fill_in_window(
+        picked, rows, store, want,
+        prior=store.cstop10_recent_clusters(since - 2 * 24 * 3600),
+        since=since)
 
     if len(picked) < want:
         print(f"[cstop10] ⚠️ 경고 — {settings.cs_top10_max_fill_days}일 전까지 "

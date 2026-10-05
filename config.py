@@ -152,7 +152,11 @@ class Settings:
     # 사용자가 허용한 범위는 "월요일 분이 일요일 기사로 안 차면 **토요일**
     # 저녁·오후 것" 즉 **바로 전날 하루**까지다. 그 이상 거슬러 가면 이미
     # 팀이 며칠 전에 본 뉴스가 오늘 Top10 에 올라온다.
-    cs_top10_fill_days: int = int(os.getenv("CS_TOP10_FILL_DAYS", "1"))
+    # **0 = 창 밖으로 나가지 않는다.** 발주자 지정(2026-10-05):
+    # "10/6 06:50에 올라가는 완성본은 10/5 06:50 이후 기사와 10/6 새벽
+    #  기사여야 한다." 전날 보충을 열어 두니 10/1~10/4 기사가 섞였다.
+    # 10건이 안 차면 **창 안에서** 상한을 풀어 채운다(아래 cstop10.select).
+    cs_top10_fill_days: int = int(os.getenv("CS_TOP10_FILL_DAYS", "0"))
     # **최후 보충 한계.** 위 1일까지 뒤져도 10건이 안 차면 여기까지 더 거슬러
     # 간다. "무조건 10건" 이 수칙이고, 자리가 빈 Top10 은 그 자체로 사고다
     # (2026-10-05 발주자 지정). 기준은 그대로다 — 같은 사건 접기·기게재
@@ -188,7 +192,7 @@ class Settings:
         if t.strip()
     ])
 
-    cs_top10_max_fill_days: int = int(os.getenv("CS_TOP10_MAX_FILL_DAYS", "4"))
+    cs_top10_max_fill_days: int = int(os.getenv("CS_TOP10_MAX_FILL_DAYS", "0"))
     daily_brief_count: int = int(os.getenv("DAILY_BRIEF_COUNT", "10"))
     # 같은 회사/같은 사건이 브리프를 독식하지 않게 하는 상한 (§24-6)
     daily_brief_max_per_entity: int = int(os.getenv("DAILY_BRIEF_MAX_PER_ENTITY", "4"))
