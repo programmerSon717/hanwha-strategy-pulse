@@ -520,10 +520,16 @@ class Store:
             rows = c.execute(
                 "SELECT cs_top10_date, source_url, canonical_url FROM published"
                 " WHERE cs_top10_date LIKE '____-__-__'").fetchall()
+        # **풀린 주소까지 본다.** 봇은 구글뉴스 리디렉터를 저장하므로 두 컬럼만
+        # 보면 기사번호를 못 뽑는다 — Top10 39건 중 27건(69%)이 그랬고, 그래서
+        # 같은 기사가 다른 날 Top10 에 다시 실렸다(2026-10-05 감사).
+        with self._conn() as c:
+            resolved = {a: b for a, b in
+                        c.execute("SELECT src, dst FROM resolved_url")}
         for d, su, cu in rows:
             if exclude_date and d == exclude_date:
                 continue
-            for u in (su, cu):
+            for u in (su, cu, resolved.get(su), resolved.get(cu)):
                 if not u:
                     continue
                 m = pat.search(u)

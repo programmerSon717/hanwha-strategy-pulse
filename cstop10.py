@@ -121,6 +121,10 @@ _GENERIC_WORDS = {
     "지원", "협력", "체계", "구조", "방안", "대응", "개선", "성장", "진출",
     "가능성", "본격화", "가시화", "전환", "부문", "기업", "국내", "해외",
     "보험", "증권", "은행", "그룹", "계열사", "업계", "당국", "정부",
+    # 2026-10-05 감사: 아래가 "희귀 낱말"로 통과해 서로 다른 기사를 묶었다.
+    "금융위", "금감원", "공정위", "증권사", "보험사", "과징금", "디지털자산",
+    "포트폴리오", "에이전트", "개인정보", "정보유출", "하나은행", "신한은행",
+    "국민은행", "우리은행", "카카오뱅크", "토스뱅크", "케이뱅크",
 }
 
 
@@ -186,8 +190,16 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
     # '애큐온캐피탈' vs '애큐온저축은행' 은 여전히 남는다 — 그때 교집합은
     # '한화생명' 이고 애큐온* 은 거기서 시작하지 않는다.
     def _strip(toks):
+        # **별칭까지 지운다.** 교집합이 '하나금융' 으로 정규화되면 제목의
+        # '하나은행' 은 접두사가 달라 안 지워졌고, 회사명 하나로 어간겹침과
+        # 희귀낱말을 두 번 받아 서로 다른 하나은행 기사가 묶였다(2026-10-05).
+        alias = set(names)
+        for n in list(names):
+            alias.add(n.replace("금융", "은행"))
+            alias.add(n.replace("금융", ""))
+        alias = {a for a in alias if len(a) >= 2}
         return {w for w in toks
-                if not any(w.startswith(n) for n in names if n)}
+                if not any(w.startswith(a) for a in alias)}
 
     # 어간 겹침에는 회사명을 **남긴다**(기존 동작). '애큐온캐피탈' 과
     # '애큐온저축은행' 처럼 회사명 자체가 같은 딜을 가리키는 경우가 있고,
@@ -857,8 +869,13 @@ def render_all(picked: list, label: str, _store=None) -> tuple[list[str], list[s
     return base, []
 
 
-_ART_ID = re.compile(r"idxno=(\d+)|newsId=(\w+)|/v/(\d+)|ncode=(\w+)"
-                     r"|AKR(\d+)|articles/(\d+)|key=(\w+)")
+# 한국 매체가 쓰는 기사번호 자리들. **빠진 패턴이 많아 Top10 의 69%가 키를
+# 못 뽑았고, 그래서 같은 기사가 다른 날 Top10 에 다시 실렸다**(2026-10-05 감사).
+_ART_ID = re.compile(
+    r"idxno=(\d+)|newsId=(\w+)|ncode=(\w+)|ar_id=(\d+)|\bno=(\d+)"
+    r"|AKR(\d+)|key=(\w+)"
+    r"|/v/(\d+)|articles?/(\d+)|/page/view/(\d+)|/news/view/(\d+)"
+    r"|/article/(\d+)|/amp/(\d+)|/view\.php\?ud=(\w+)")
 
 
 def article_key(url: str) -> str:
