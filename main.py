@@ -729,6 +729,21 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
                 continue
 
         prior = store.cluster_seen(cluster_id, events.EVENT_WINDOW_SEC)
+        # **회차가 달라도 같은 사건이면 막는다.** cluster_seen 은 fingerprint
+        # 완전일치만 본다. 모델이 같은 사건의 엔티티를 기사마다 다르게 적어
+        # cluster_id 가 갈리면 그대로 또 나간다 — 아부다비 디지털금융 건이
+        # 17:24 와 19:01 에 두 번 발행됐다(2026-10-05 발주자 지적).
+        if not prior:
+            _mine = events.parts(data, title_for_event)
+            for _h, _e, _et, _sa in store.recent_events(events.EVENT_WINDOW_SEC):
+                _d = {"main_entities": [x.strip() for x in (_e or "").split(",")
+                                        if x.strip()],
+                      "event_type": _et, "title_ko": _h}
+                if events.same_event(_mine, title_for_event,
+                                     events.parts(_d, _h), _h):
+                    prior = (_h, 0, _sa)
+                    print(f"[중복Event] 회차 간 같은 사건: {_h[:40]}")
+                    break
         if prior and not material:
             # 이미 발행한 사건이고 새 사실도 없다.
             _judge(item, key, relevant=True, score=score, topic=topic,

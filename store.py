@@ -420,6 +420,25 @@ class Store:
                 (cluster_id, time.time() - within_sec),
             ).fetchone()
 
+    def recent_events(self, within_sec: float) -> list:
+        """최근 발행분의 (제목, 엔티티, 종류, 발행시각).
+
+        **회차 간 중복 판정용.** cluster_seen 은 event_cluster_id 문자열
+        완전일치만 본다. 그런데 모델이 같은 사건의 main_entities 를 기사마다
+        다르게 적어 fingerprint 가 갈리므로, 회차가 바뀌면 같은 사건이 그대로
+        또 나간다. 실측(2026-10-05): 아부다비 디지털금융 건이 17:24 와 19:01
+        에 두 번 발행됐다. 애큐온 딜은 cluster_id 가 5가지로 갈렸다.
+
+        그래서 실제 값을 돌려주고 events.same_event 로 다시 비교한다.
+        """
+        with self._conn() as c:
+            return c.execute(
+                "SELECT headline, main_entities, event_type, sent_at"
+                "  FROM published"
+                " WHERE sent_at > ? AND headline IS NOT NULL AND headline <> ''"
+                " ORDER BY sent_at DESC LIMIT 400",
+                (time.time() - within_sec,)).fetchall()
+
     def key_issues_since(self, since_ts: float) -> int:
         """하루 주요이슈 발행 건수 — 과도 발행 방지 (§20)."""
         with self._conn() as c:
