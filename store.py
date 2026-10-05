@@ -496,7 +496,10 @@ class Store:
             row = c.execute(
                 "SELECT 1 FROM published"
                 " WHERE event_cluster_id = ?"
-                "   AND mirror_ids IS NOT NULL AND mirror_ids != ''"
+                # 주요이슈는 이제 **그 탭 하나에만** 올린다(미러 폐지).
+                # 옛 데이터의 미러도 함께 센다.
+                "   AND (primary_topic = 'key_issues' OR category = 'key_issues'"
+                "        OR (mirror_ids IS NOT NULL AND mirror_ids != ''))"
                 "   AND sent_at > ?"
                 " LIMIT 1",
                 (cluster_id, _t.time() - hours * 3600)).fetchone()
