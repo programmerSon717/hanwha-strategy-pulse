@@ -473,6 +473,39 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
                 print(f"[요약] 예산({budget}초) 초과 — 발행에 "
                       f"{budget * (1 - SUMMARIZE_BUDGET_RATIO):.0f}초 따로 배정")
 
+    # ── 같은 사건이면 **가장 큰 개념**만 남긴다 (2026-10-05 발주자 지시) ──
+    # "집합개념으로 따지면 더 큰 개념의 내용을 담고있는거만 하나만 올려."
+    #
+    # 아래 발행 루프는 한 건씩 순차로 결정한다. 그래서 먼저 온 좁은 기사가
+    # 이미 나간 뒤에 더 큰 기사가 와도 되돌릴 수 없다. 실제로 같은 긴급소집
+    # 건이 07:45 한 회차에 세 건 나갔다 — 주체를 하나만 적었는지 둘 다
+    # 적었는지로 fingerprint 가 갈렸고, 뒤에 온 더 큰 기사가 대표가 되면서
+    # 저마다 '대표'로 통과했다.
+    #
+    # 요약은 이 시점에 이미 끝나 있어 엔티티를 알 수 있다. 그래서 여기서
+    # 미리 묶어 두고 각 사건에서 포괄성이 가장 큰 것 하나만 통과시킨다.
+    narrower: set[str] = set()
+    if summaries:
+        pre = events.EventIndex()
+        best: dict[str, tuple] = {}
+        for i in ordered:
+            k = Store.make_key(i.source, i.unique_id)
+            d = summaries.get(k)
+            if not d:
+                continue
+            t = d.get("title_ko") or i.title
+            fp = pre.add(d, t, i.source, len(i.body or ""))
+            cov = events.coverage(d, t)
+            cur = best.get(fp)
+            if cur is None or cov > cur[0]:
+                if cur:
+                    narrower.add(cur[1])
+                best[fp] = (cov, k)
+            else:
+                narrower.add(k)
+        if narrower:
+            print(f"[중복Event] 같은 사건 — 더 큰 개념만 남기고 {len(narrower)}건 제외")
+
     for item in ordered:
         # 시간 상한을 넘으면 남은 항목은 손대지 않고 다음 실행으로 넘긴다.
         # '본 것으로 표시'를 하기 전에 끊어야 발행 없이 유실되는 항목이 생기지 않는다.
@@ -670,6 +703,17 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
         cluster_id = event_index.add(data, title_for_event, item.source,
                                      len(item.body or ""))
         material = events.looks_material(title_for_event, data)
+
+        # 같은 회차 안에서 더 큰 개념의 기사에 밀린 건은 내보내지 않는다.
+        # material 예외를 두지 않는다 — material 은 '앞서 발행한 것 대비
+        # 새 사실'을 뜻하지, 같은 회차의 더 큰 기사를 이길 근거가 아니다.
+        if key in narrower:
+            _judge(item, key, relevant=True, score=score, topic=topic,
+                   reason="동일 Event — 더 큰 개념의 기사로 대체",
+                   dup=cluster_id, dry=dry_run)
+            clustered += 1
+            print(f"[중복Event] 더 큰 개념에 밀림: {item.title[:40]}")
+            continue
 
         if dup_fp and not material:
             # 같은 사건을 이번 실행에서 이미 잡았다. 대표기사만 내보낸다.
