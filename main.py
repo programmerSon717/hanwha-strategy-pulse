@@ -795,6 +795,37 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
         data["headline"] = data.get("title_ko") or item.title
         data["lede"] = data.get("summary") or ""
 
+        # ── 🚨 주요이슈면 **거기 하나에만** 올린다 ──────────────────
+        # 예전엔 원 토픽에 올린 뒤 주요이슈에 복제(미러)했다. 집계 토픽이라
+        # 중복이 허용된다는 설계였는데, 발주자가 보기엔 같은 기사가 두 탭에
+        # 있는 것이고 집합론 수칙 위반이다(2026-10-05 지적, 아부다비 건).
+        # 주요이슈가 더 큰 집합이므로 그쪽만 남긴다.
+        _incident = events.looks_incident(data.get("headline") or "", data)
+        _ki = _incident or (
+            data.get("is_key_issue")
+            and score >= settings.key_issue_threshold
+            and events.decisive(data.get("headline") or "", data))
+        if _ki and cluster_id and store.key_issue_cluster_seen(cluster_id):
+            # 같은 사건이 이미 주요이슈로 나갔으면 주요이슈 자격을 거둔다.
+            # 그러면 아래에서 원 토픽으로 간다.
+            print(f"[주요이슈] 같은 사건 기게재 — 원 토픽으로: "
+                  f"{(data.get('headline') or '')[:30]}")
+            _ki = False
+        if _ki and not _incident and key_issue_count >= settings.key_issue_daily_cap:
+            print(f"[주요이슈] 일일 상한 {settings.key_issue_daily_cap} 도달 — "
+                  f"원 토픽으로: {(data.get('headline') or '')[:30]}")
+            _ki = False
+        if _ki:
+            _kt = topics_thread_id("key_issues")
+            if _kt:
+                topic = "key_issues"
+                data["primary_topic"] = topic
+                # category 가 실제 라우팅 키다(publisher.publish 가 이걸 본다).
+                data["category"] = topic
+            else:
+                print("[주요이슈] 탭 thread_id 없음 — 원 토픽으로 보낸다")
+                _ki = False
+
         stats[topic] = stats.get(topic, 0) + 1
         annotate_origin(data, item)
 
@@ -811,41 +842,11 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             _, origin = publisher.origin_of(data)
             ids = [i for i in data.get("_message_ids", []) if i != msg_id]
 
-            # 🚨 주요이슈 — 집계 토픽이므로 원 토픽과 중복 게시가 허용된다 (§6, §20).
-            # 이미 렌더된 본문을 그대로 재사용하므로 모델을 다시 부르지 않는다.
             mirror_ids = []
-            # 사고·피해 기사는 점수와 무관하게 올린다(2026-10-05 발주자 지시).
-            # 해킹·정보유출 14건이 전부 임계값 미달로 주요이슈에 못 올라가고
-            # 네 토픽에 흩어졌다. events.looks_incident 주석 참고.
-            _incident = events.looks_incident(data.get("headline") or "", data)
-            # 사건성 게이트. "한화 + 고득점" 만으로는 주요이슈가 아니다.
-            # events.decisive 주석 참고(2026-10-05 발주자 지적).
-            _ki = _incident or (
-                data.get("is_key_issue")
-                and score >= settings.key_issue_threshold
-                and events.decisive(data.get("headline") or "", data))
             if _ki:
-                # **같은 사건은 하루 한 건만.** 회차 안 중복 제거만으로는
-                # 모자랐다 — 실측으로 10-02 하루치에 23건(그날 피드의 38%)이
-                # 주요이슈가 됐고, 애큐온 딜 하나가 12건을 차지했다.
-                # 사고·피해는 일일 상한을 넘기되, 이 cluster 제한은 받는다.
-                if cluster_id and store.key_issue_cluster_seen(cluster_id):
-                    print(f"[주요이슈] 같은 사건 기게재 — 생략: "
-                          f"{data['headline'][:30]}")
-                elif _incident or key_issue_count < settings.key_issue_daily_cap:
-                    ktid = topics_thread_id("key_issues")
-                    body = data.get("_rendered", "")
-                    if ktid and body:
-                        mid2 = await publisher.send_raw(client, body, ktid)
-                        if mid2:
-                            mirror_ids.append(mid2)
-                            key_issue_count += 1
-                            print(f"[주요이슈] 추가 게시 ({key_issue_count}/"
-                                  f"{settings.key_issue_daily_cap}) "
-                                  f"{data['headline'][:34]}")
-                else:
-                    print(f"[주요이슈] 일일 상한 {settings.key_issue_daily_cap} 도달 — "
-                          f"추가 게시 생략: {data['headline'][:34]}")
+                key_issue_count += 1
+                print(f"[주요이슈] 게시 ({key_issue_count}) "
+                      f"{data['headline'][:34]}")
 
             store.record_published(key, msg_id, topics_thread_id(topic),
                                    origin or item.url, data["headline"],
