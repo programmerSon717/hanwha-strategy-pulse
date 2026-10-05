@@ -3,7 +3,7 @@
 > 텔레그램 봇: @<봇 핸들 — .env 참조> · 표시 이름 BOT_NAME=Strategy Pulse (2026-10-01 BSP Pulse 에서 변경)
 > 리포/디렉터리 이름(<repo>, BSP-news-bot)과 내부 키는 바꾸지 않았다.
 
-> A팀(Business Strategy & Planning) 전용 Strategic Intelligence Agent.
+> A팀 전용 Strategic Intelligence Agent.
 > 최초 작성: 2026-09-23
 
 ---

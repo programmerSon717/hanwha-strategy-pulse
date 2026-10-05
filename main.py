@@ -656,6 +656,10 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             # 정상적으로 통과한다(2026-10-05 감사).
             item.url = _alt.url
             item.source = _alt.source
+            # 발행시각도 함께 바꾼다. 안 바꾸면 인스턴트뷰의
+            # '기사발행시각' 이 **유료 원문 시각**으로 찍힌다 —
+            # 대체본 탐색창이 ±2일이라 최대 48시간 틀어진다(2026-10-05).
+            item.published_at = getattr(_alt, "published_at", None) or item.published_at
             _paras, _ = telegraph.fetch_article(_alt.url, title=item.title)
             if _paras:
                 item.body = "\n".join(_paras)[:6000]
@@ -821,9 +825,14 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
                 and score >= settings.key_issue_threshold
                 and events.decisive(data.get("headline") or "", data))
             if _ki:
-                # 사고·피해는 일일 상한도 넘긴다 — "무조건 주요이슈로".
-                # 같은 사건은 위 중복 제거가 한 건으로 접으므로 범람하지 않는다.
-                if _incident or key_issue_count < settings.key_issue_daily_cap:
+                # **같은 사건은 하루 한 건만.** 회차 안 중복 제거만으로는
+                # 모자랐다 — 실측으로 10-02 하루치에 23건(그날 피드의 38%)이
+                # 주요이슈가 됐고, 애큐온 딜 하나가 12건을 차지했다.
+                # 사고·피해는 일일 상한을 넘기되, 이 cluster 제한은 받는다.
+                if cluster_id and store.key_issue_cluster_seen(cluster_id):
+                    print(f"[주요이슈] 같은 사건 기게재 — 생략: "
+                          f"{data['headline'][:30]}")
+                elif _incident or key_issue_count < settings.key_issue_daily_cap:
                     ktid = topics_thread_id("key_issues")
                     body = data.get("_rendered", "")
                     if ktid and body:

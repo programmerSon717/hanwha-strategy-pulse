@@ -261,6 +261,73 @@ jobs:
             done
           done
 
+      - name: 미발행 경보
+
+        # **조용히 죽는 것을 막는다.** 루프 안 python 호출이 전부 `|| echo` 로
+
+        # 감싸여 있어, 모델 한도 소진·토큰 폐기 같은 결정적 실패가 나도 job 은
+
+        # 초록색으로 끝나고 발행만 0건이 된다. 발행 시각이 지났는데 오늘
+
+        # 아직 안 나갔으면 사람에게 알린다(2026-10-05 감사).
+
+        if: always()
+
+        env:
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+
+          TG_TOPIC_KEY_ISSUES: ${{ secrets.TG_TOPIC_KEY_ISSUES }}
+
+        run: |
+
+          MISSED=$(python - <<'PY' 2>/dev/null || echo "")
+
+          import datetime, sys
+
+          sys.path.insert(0, ".")
+
+          from config import settings
+
+          from store import Store
+
+          KST = datetime.timezone(datetime.timedelta(hours=9))
+
+          now = datetime.datetime.now(KST)
+
+          hh, _, mm = settings.cs_top10_time.partition(":")
+
+          due = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+
+          # 발행 시각이 40분 넘게 지났는데 기록이 없으면 경보
+
+          if now > due + datetime.timedelta(minutes=40):
+
+              if not Store(settings.db_path).agg_ran_on("cs_top10", now.timestamp()):
+
+                  print("MISSED")
+
+          PY
+
+          if [[ "$MISSED" == *MISSED* && -n "$TELEGRAM_BOT_TOKEN" ]]; then
+
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+
+              -d chat_id="$TELEGRAM_CHANNEL_ID" \
+
+              -d message_thread_id="$TG_TOPIC_KEY_ISSUES" \
+
+              -d text="⚠️ 오늘 Top10 이 아직 발행되지 않았습니다. 수집·모델 한도·토큰을 확인하세요." \
+
+              >/dev/null || true
+
+            echo "  [경보] 미발행 알림 전송"
+
+          fi
+
+
       - name: 다음 루프 예약 (자체 체인)
         # **이게 이 봇이 24시간 도는 실제 동력이다.** cron 은 보조일 뿐이다.
         #

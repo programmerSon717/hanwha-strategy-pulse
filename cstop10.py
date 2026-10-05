@@ -1042,12 +1042,18 @@ def drop_stale(rows: list, floor_day: str) -> list:
     """기사 발행일이 하한보다 이른 행을 버린다. 발행일이 없는 행은 남긴다."""
     out = []
     for r in rows:
+        # **예외를 넓게 잡는다.** 예전엔 float() 만 감쌌는데, origin_at 이
+        # 밀리초 epoch 로 들어오면 fromtimestamp 가 OverflowError/ValueError
+        # 를 던져 drop_stale 이 통째로 터지고 run() 이 죽었다 — 삼중 cron 이
+        # 전부 같은 코드라 **네 경로가 동시에 죽는** 유일한 유형이었다
+        # (2026-10-05 감사, 재현 확인).
         try:
             o = float(r[K_ORIGIN])
-        except (TypeError, ValueError, IndexError):
-            out.append(r)
+            day = datetime.fromtimestamp(o, KST).strftime("%Y-%m-%d")
+        except Exception:
+            out.append(r)        # 판단 못 하면 살린다 — 버리는 쪽이 더 위험하다
             continue
-        if datetime.fromtimestamp(o, KST).strftime("%Y-%m-%d") >= floor_day:
+        if day >= floor_day:
             out.append(r)
     return out
 
@@ -1107,6 +1113,18 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
         lo, hi = since - day * back, since - day * (back - 1)
         extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
                                          by_origin=by_origin)
+        if not extra:
+            continue
+        prior = (store.cstop10_recent_clusters(lo - 7 * day)
+                 + store.published_clusters_before(lo))
+        picked = topup(picked, extra, store, asof, want, prior=prior)
+    # run() 과 같은 최후 보충. 초안과 실발행이 어긋나면 미리 검증한 의미가 없다.
+    while len(picked) < want and back < settings.cs_top10_max_fill_days:
+        back += 1
+        lo, hi = since - day * back, since - day * (back - 1)
+        extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
+                                         by_origin=by_origin)
+        extra = drop_stale(extra, datetime.fromtimestamp(lo, KST).strftime("%Y-%m-%d"))
         if not extra:
             continue
         prior = (store.cstop10_recent_clusters(lo - 7 * day)
@@ -1296,15 +1314,43 @@ async def run(client, store, dry_run: bool | None = None,
         picked = topup(picked, extra, store,
                        asof or datetime.now(KST).timestamp(), want, prior=prior)
 
+    # ── 최후 보충 ──────────────────────────────────────────────
+    # 여기까지 와서도 모자라면 **더 거슬러 간다.** "무조건 10건" 이 수칙이고,
+    # 2건짜리 Top10 을 내는 것이 오래된 기사를 한둘 섞는 것보다 나쁘다
+    # (2026-10-05 발주자 지정, 10/6 발행분이 2건에서 막힌 뒤 추가).
+    # 기준은 그대로 간다 — topup 안의 같은 사건 접기·기게재 제외·범주 상한·
+    # 유료 차단·본문 확보 검사가 전부 그대로 걸린다.
+    while len(picked) < want and back < settings.cs_top10_max_fill_days:
+        back += 1
+        lo, hi = since - day * back, since - day * (back - 1)
+        extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
+                                         by_origin=by_origin)
+        extra = drop_stale(extra, datetime.fromtimestamp(lo, KST).strftime("%Y-%m-%d"))
+        if not extra:
+            continue
+        prior = (store.cstop10_recent_clusters(lo - 7 * day)
+                 + store.published_clusters_before(lo))
+        before = len(picked)
+        picked = topup(picked, extra, store,
+                       asof or datetime.now(KST).timestamp(), want, prior=prior)
+        if len(picked) > before:
+            print(f"[cstop10] 최후 보충 — {back}일 전에서 {len(picked) - before}건 "
+                  f"(총 {len(picked)}건)")
+
     if len(picked) < want:
-        print(f"[cstop10] {settings.cs_top10_fill_days}일 전까지 뒤졌으나 {len(picked)}건 "
-              f"— 기준을 지키면 서로 다른 사건이 이만큼뿐이다")
+        print(f"[cstop10] ⚠️ 경고 — {settings.cs_top10_max_fill_days}일 전까지 "
+              f"뒤졌으나 {len(picked)}/{want}건. 기준을 지키면 서로 다른 사건이 "
+              f"이만큼뿐이다. 수집량·중복 제외 범위를 확인하라.")
 
     span = (f"{datetime.fromtimestamp(since, KST):%m-%d %H:%M}"
             f" ~ {datetime.fromtimestamp(until, KST):%m-%d %H:%M}")
     print(f"[cstop10] 구간 {span} · 후보 {len(rows)}건 → 선정 {len(picked)}건")
     if not picked:
-        print("[cstop10] 후보 없음 — 게시하지 않음")
+        # 0건이면 낼 것이 없다. 다만 **조용히 넘어가지 않는다** — due() 가
+        # 계속 참이라 긴급 레인이 5분마다 종일 재시도하는데, 아무도 그걸
+        # 모르는 것이 가장 나쁘다(2026-10-05 감사).
+        print("[cstop10] ⚠️ 후보 0건 — 게시할 것이 없다. "
+              "수집이 멈췄거나 중복 제외가 과한지 확인하라.")
         return None
 
     msgs, preview_urls = render_all(picked, label, store)

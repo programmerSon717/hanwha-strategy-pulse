@@ -481,6 +481,27 @@ class Store:
                 (min_score, since_ts, until_ts),
             ).fetchall()
 
+    def key_issue_cluster_seen(self, cluster_id: str,
+                               hours: int = 24) -> bool:
+        """그 사건이 **오늘 이미 주요이슈로 나갔는가.**
+
+        주요이슈는 집계 토픽이라 원 토픽과 중복 게시를 허용한다. 그러나
+        같은 사건의 다른 보도까지 다 올리면 큐레이션이 아니라 중복이 된다
+        (2026-10-05 감사: 하루 23건, 그중 12건이 같은 딜).
+        """
+        if not cluster_id:
+            return False
+        import time as _t
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM published"
+                " WHERE event_cluster_id = ?"
+                "   AND mirror_ids IS NOT NULL AND mirror_ids != ''"
+                "   AND sent_at > ?"
+                " LIMIT 1",
+                (cluster_id, _t.time() - hours * 3600)).fetchone()
+        return bool(row)
+
     def published_clusters_before(self, before_ts: float,
                                   since_ts: float | None = None) -> list:
         """**창 시작 전에 이미 일반 탭으로 나간** 사건들의 (제목, 엔티티, 종류).
