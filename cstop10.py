@@ -252,6 +252,12 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
 TIER_BONUS = {1: 25, 2: 15, 3: 10, 4: 5, 5: 0}
 
 
+# 한화 **금융**계열사. 발주 수칙의 4순위다 — 1순위(한화그룹 전반)와 가른다.
+_HANWHA_FIN_RE = re.compile(
+    r"한화생명|한화손해보험|한화손보|한화투자증권|한화증권|한화자산운용"
+    r"|한화저축은행|한화금융|한화생명금융서비스|캐롯손해보험|캐롯손보|피플라이프")
+
+
 def tier_of(r) -> int:
     """추천 서칭 순서상의 티어. **한화 여부는 제목으로 판단한다.**
 
@@ -270,16 +276,29 @@ def tier_of(r) -> int:
     etype = r[K_ETYPE] if len(r) > K_ETYPE else ""
     pri = r[K_PRI] or ""
 
+    group = events.ACTION_GROUPS.get(etype or "other", "other")
+
+    # 1순위 — 기사의 핵심이 한화. **금융계열사도 여기다.**
+    # (한때 금융계열사를 4순위로 내려 봤는데, 한화생명이 2·4순위로 흩어져
+    #  오히려 나빠졌다. 발주 4순위는 "한화가 곁다리로만 언급된 것" 을 뜻한다.)
     if csfit.primary_category(title) == "한화":
         return 1
-    if pri == "ma_governance" or etype in events.ACTION_GROUPS and \
-            events.ACTION_GROUPS.get(etype) == "deal":
+    # 2순위 — 진행중인 M&A · 보험
+    if pri == "ma_governance" or group == "deal":
         return 2
     if pri == "insurance_finance":
         return 2
-    if pri == "regulation_policy":
+    # 3순위 — 규제 · 지배구조
+    #
+    # **primary_topic 만 보면 안 된다.** 2순위는 event_type 도 보는데 여기만
+    # 안 봐서, "금융위, 토스뱅크 반값 엔화 적법성 검토" 같은 명백한 규제
+    # 기사가 5순위로 추락했다(2026-10-05 감사, 실측 6건).
+    # "지배구조" 는 발주 수칙 3번에 적혀 있는데 분기 자체가 없었다.
+    if pri == "regulation_policy" or group in ("regulation", "governance"):
         return 3
-    if "한화" in ents:
+    # 4순위 — 한화가 **곁다리로만** 언급된 기사. 제목에는 없고 entities 에만
+    # 있는 경우다. 1순위가 제목으로 먼저 가져가므로 여기 남는 건 그것뿐이다.
+    if "한화" in ents or _HANWHA_FIN_RE.search(ents):
         return 4
     return 5
 
@@ -997,6 +1016,42 @@ def topup(picked: list, rows: list, store, now: float, want: int,
     return picked
 
 
+def origin_floor_day(since: float) -> str:
+    """후보로 받아줄 **기사 발행일의 하한**(YYYY-MM-DD).
+
+    창은 sent_at(봇이 내보낸 시각)으로 자른다 — 봇이 처리한 것만 후보가 되므로
+    운영상 그래야 한다. 그런데 그러면 **며칠 전 기사**가 어제 수집됐다는
+    이유로 오늘 판에 들어온다. 실측(2026-10-05, 10/6 발행분 초안): 창이
+    10/5 06:50~10/6 06:00 인데 10/3 21:15 기사가 선정됐다.
+
+    사용자가 창을 정의한 말은 "10월4일 오전 6시50분**뉴스**~10월5일 오전6시까지
+    발행된거" 이고, 따로 "10/4 판에 10/1 기사가 실렸다"고 지적했다. 즉 기준은
+    **기사가 보도된 날**이다. 그래서 sent_at 창에 더해 기사 발행일 하한을 건다.
+
+    하한은 **날짜 단위**다. 시각으로 자르면 발행시각을 날짜만 주는 매체의
+    기사(origin_at 이 00:00 으로 들어온다)가 같은 날인데도 떨어진다.
+    허용 폭은 창 시작일에서 cs_top10_fill_days 만큼 거슬러 간 날까지 —
+    보충이 허용된 범위와 같게 둔다.
+    """
+    base = datetime.fromtimestamp(since, KST) - timedelta(
+        days=max(0, settings.cs_top10_fill_days))
+    return base.strftime("%Y-%m-%d")
+
+
+def drop_stale(rows: list, floor_day: str) -> list:
+    """기사 발행일이 하한보다 이른 행을 버린다. 발행일이 없는 행은 남긴다."""
+    out = []
+    for r in rows:
+        try:
+            o = float(r[K_ORIGIN])
+        except (TypeError, ValueError, IndexError):
+            out.append(r)
+            continue
+        if datetime.fromtimestamp(o, KST).strftime("%Y-%m-%d") >= floor_day:
+            out.append(r)
+    return out
+
+
 def quality_of(picked: list) -> float:
     """초안끼리 견주는 점수. **건수가 먼저, 그다음이 적합도 평균**이다.
 
@@ -1038,6 +1093,7 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
     want = settings.daily_brief_count
     rows = store.cstop10_candidates(since, until, settings.discard_threshold,
                                     by_origin=by_origin)
+    rows = drop_stale(rows, origin_floor_day(since))
     picked = select(rows, store=store, now=asof)
     if len(picked) < want:
         _prior = (store.cstop10_recent_clusters(since - 7 * 24 * 3600)
@@ -1143,6 +1199,7 @@ async def run(client, store, dry_run: bool | None = None,
         rows = store.cstop10_candidates(since_ts, until,
                                         settings.discard_threshold,
                                         by_origin=by_origin)
+        rows = drop_stale(rows, origin_floor_day(since))
         return rows, select(rows, store=store, now=asof)
 
     # **확정된 초안이 있으면 그걸 그대로 낸다.**
