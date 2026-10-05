@@ -130,7 +130,10 @@ def same_event(a: tuple, title_a: str, b: tuple, title_b: str) -> bool:
         # 제목 유사도가 높거나, 변별력 있는 낱말을 공유할 때.
         if similarity(title_a, title_b) >= TITLE_SIMILARITY:
             return True
-        return _distinctive_overlap(title_a, title_b, ents_a | ents_b)
+        # 변별어 **2개 이상**을 요구한다. 1개만으로 묶으면 "해킹" 하나로
+        # 신한은행 IP 추적과 토스뱅크 환전 분쟁이 한 사건이 됐다
+        # (2026-10-05 2차 감사).
+        return _distinctive_count(title_a, title_b, ents_a | ents_b) >= 2
     # 제목 유사도를 **내용 낱말로만** 재도록 좁혀 봤으나 되돌렸다(2026-10-05).
     # 그러면 "한화생명, 애큐온 인수 확정" × "…인수 통해 여신금융 진출" 이
     # 0.25 에서 0.125 로 떨어져 갈라진다 — 2026-10-01 애큐온 3중 발행 사고를
@@ -171,6 +174,10 @@ _GENERIC_TOKENS = {
     "ai", "보안", "유출", "침해", "지원", "변화", "규제", "과징금", "제재",
     "증권사", "은행권", "보험사", "진입", "미국", "일본", "중국", "유럽",
     "고객", "정보", "서비스", "플랫폼", "사업", "전략", "협력", "경쟁",
+    # 2026-10-05 2차. 아래가 1개만 겹쳐도 무관한 기사가 묶였다.
+    "해킹", "국정감사", "국감", "ga", "제한", "소집", "점검", "논의",
+    "채널", "판매", "실손", "대책", "체계", "강화", "확산", "우려",
+    "대형", "대표", "관행", "도마", "증인", "채택", "추세", "방안",
 }
 
 
@@ -199,6 +206,33 @@ def _aliases_of(canon: str) -> set:
                 out.update(al)
                 out.add(c)
     return out
+
+
+def _distinctive_count(a: str, b: str, ents: frozenset = frozenset()) -> int:
+    """두 제목이 공유하는 **변별력 있는 낱말의 개수.**"""
+    return len(_distinctive_shared(a, b, ents))
+
+
+def _distinctive_shared(a: str, b: str, ents: frozenset = frozenset()) -> set:
+    """두 제목이 공유하는 변별력 있는 낱말 집합."""
+    drop = set(_GENERIC_TOKENS) | _ACTION_TOKENS
+    names = set()
+    for e in ents:
+        drop |= _tokens(e)
+        names.add(_norm(e))
+        for _al in _aliases_of(e):
+            names.add(_norm(_al))
+            drop |= _tokens(_al)
+    drop |= names
+
+    def _is_entity(t: str) -> bool:
+        return any(n and (n in t or t in n) for n in names)
+
+    def _ok(t):
+        return (t not in drop and not _is_entity(t)
+                and not _NUM_TOKEN.match(t) and len(t) >= 2)
+
+    return {t for t in _tokens(a) if _ok(t)} & {t for t in _tokens(b) if _ok(t)}
 
 
 def _distinctive_overlap(a: str, b: str, ents: frozenset = frozenset()) -> bool:
