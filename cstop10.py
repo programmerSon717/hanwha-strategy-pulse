@@ -1166,6 +1166,7 @@ def _save_draft_msg_ids(store, pub: str, ids: list) -> None:
 
 async def clear_draft_posts(client, store, pub: str) -> int:
     """그 발행일의 초안 메시지를 **전부 지운다.** 지운 수를 돌려준다."""
+    import asyncio
     import publisher
     ids = _draft_msg_ids(store, pub)
     gone = 0
@@ -1185,6 +1186,7 @@ async def clear_draft_posts(client, store, pub: str) -> int:
 async def post_draft(client, store, pub: str, picked: list,
                      asof: float) -> int:
     """초안을 두 탭에 올린다. 앞서 올린 초안은 먼저 지운다."""
+    import asyncio          # 모듈 최상단에 없다 — run() 도 함수 안에서 임포트한다
     import publisher
     await clear_draft_posts(client, store, pub)
     if not picked:
