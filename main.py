@@ -826,16 +826,23 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             print(f"[주요이슈] 같은 사건 기게재 — 원 토픽으로: "
                   f"{(data.get('headline') or '')[:30]}")
             _ki = False
-        if _ki and not _incident and key_issue_count >= settings.key_issue_daily_cap:
+        # 사고·피해도 상한을 완전히 무시하지는 않는다. 해킹이 쏟아진 날
+        # 주요이슈가 cap 의 2.5배(23건)가 됐다(2026-10-05 감사). 사고는
+        # 두 배까지만 허용한다.
+        _cap = (settings.key_issue_daily_cap * 2 if _incident
+                else settings.key_issue_daily_cap)
+        if _ki and key_issue_count >= _cap:
             print(f"[주요이슈] 일일 상한 {settings.key_issue_daily_cap} 도달 — "
                   f"원 토픽으로: {(data.get('headline') or '')[:30]}")
             _ki = False
         if _ki:
             _kt = topics_thread_id("key_issues")
             if _kt:
-                topic = "key_issues"
-                data["primary_topic"] = topic
+                # **category 만 바꾼다.** primary_topic 까지 덮으면
+                # cstop10.tier_of 가 'key_issues' 를 몰라 그 기사가
+                # 2순위에서 5순위로 추락한다(2026-10-05 감사).
                 # category 가 실제 라우팅 키다(publisher.publish 가 이걸 본다).
+                topic = "key_issues"
                 data["category"] = topic
             else:
                 print("[주요이슈] 탭 thread_id 없음 — 원 토픽으로 보낸다")

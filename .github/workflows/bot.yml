@@ -144,49 +144,9 @@ jobs:
           DIGEST_FLAG=/tmp/digest_published
 
           save_state() {
-            # 브리핑이 나간 회차만 사람 이메일로 커밋한다(기여 그래프용).
-            # 폴링 커밋까지 사람 이름으로 돌리면 하루 70여 건이 쌓여 실제 작업이 묻힌다.
-            # 커밋 작성자는 git log 에 적히는 문자열일 뿐이라 발행·폴링과 무관하다.
-            if [[ -f "$DIGEST_FLAG" ]]; then
-              git config user.name  "programmerSon717"
-              git config user.email "73008892+programmerSon717@users.noreply.github.com"
-              MSG="digest: $(TZ=Asia/Seoul date '+%m-%d %H시') 브리핑 [skip ci]"
-              rm -f "$DIGEST_FLAG"
-            else
-              git config user.name  "github-actions[bot]"
-              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              MSG="chore: 발행 이력 갱신 [skip ci]"
-            fi
-            if [[ -z "$(git status --porcelain botstate.sqlite3)" ]]; then
-              echo "  [상태] 새 발행 없음 — 커밋 생략"
-              return
-            fi
-            git add botstate.sqlite3
-            git commit -q -m "$MSG"
-            # **rebase 대신 SQL 병합.** 바이너리 DB 는 git 이 합치지 못해
-            # rebase 가 반드시 충돌하고, abort 하면 그 회차에 수집·발행한
-            # 기록이 통째로 사라진다. 사람이 로컬에서 푸시하는 동안에는
-            # 매번 일어난다(2026-10-05 실측: 봇 상태가 2시간 유실).
-            # 원격 행을 로컬에 합친 뒤 커밋을 고쳐 쓰고 올린다.
-            git fetch -q origin || true
-            if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
-              python tools/merge_state.py origin/main || true
-              git add botstate.sqlite3 || true
-              git commit -q --amend --no-edit || true
-              # 원격 커밋 위로 다시 얹는다. 코드 파일은 러너가 받은 그대로라
-              # 충돌 지점이 DB 뿐이고, 그건 위에서 이미 합쳤다.
-              git rebase -q -X ours origin/main 2>/dev/null || {
-                git rebase --abort 2>/dev/null || true
-                git reset -q --soft origin/main
-                git add botstate.sqlite3 || true
-                git commit -q -m "$MSG" || true
-              }
-            fi
-            if git push -q; then
-              echo "  [상태] 발행 이력 커밋·푸시 완료"
-            else
-              echo "  [상태] 푸시 실패 — 다음 회차에 재시도"
-            fi
+
+            local MSG="${1:-chore: 발행 이력 갱신 [skip ci]}"
+            bash scripts/save_state.sh "$MSG" || true
           }
 
           LOOP_END=$(( $(date +%s) + LOOP_SECONDS ))
@@ -282,15 +242,17 @@ jobs:
 
       - name: 미발행 경보
 
-        # **조용히 죽는 것을 막는다.** 루프 안 python 호출이 전부 `|| echo` 로
+        # 루프 안 python 호출이 전부 `|| echo` 로 감싸여 있어, 결정적 실패가
 
-        # 감싸여 있어, 모델 한도 소진·토큰 폐기 같은 결정적 실패가 나도 job 은
+        # 나도 job 은 초록색으로 끝나고 발행만 0건이 된다. 발행 시각이 지났는데
 
-        # 초록색으로 끝나고 발행만 0건이 된다. 발행 시각이 지났는데 오늘
+        # 오늘 아직 안 나갔으면 사람에게 알린다(2026-10-05 감사).
 
-        # 아직 안 나갔으면 사람에게 알린다(2026-10-05 감사).
+        # 취소된 런에서는 돌리지 않는다 — 푸시로 런이 여러 개 취소되면 경보가
 
-        if: always()
+        # 그만큼 중복 발송된다.
+
+        if: always() && !cancelled()
 
         env:
 
@@ -302,33 +264,7 @@ jobs:
 
         run: |
 
-          MISSED=$(python - <<'PY' 2>/dev/null || echo "")
-
-          import datetime, sys
-
-          sys.path.insert(0, ".")
-
-          from config import settings
-
-          from store import Store
-
-          KST = datetime.timezone(datetime.timedelta(hours=9))
-
-          now = datetime.datetime.now(KST)
-
-          hh, _, mm = settings.cs_top10_time.partition(":")
-
-          due = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
-
-          # 발행 시각이 40분 넘게 지났는데 기록이 없으면 경보
-
-          if now > due + datetime.timedelta(minutes=40):
-
-              if not Store(settings.db_path).agg_ran_on("cs_top10", now.timestamp()):
-
-                  print("MISSED")
-
-          PY
+          MISSED=$(python tools/check_missed.py 2>/dev/null || true)
 
           if [[ "$MISSED" == *MISSED* && -n "$TELEGRAM_BOT_TOKEN" ]]; then
 
@@ -345,6 +281,7 @@ jobs:
             echo "  [경보] 미발행 알림 전송"
 
           fi
+
 
 
       - name: 다음 루프 예약 (자체 체인)
@@ -390,16 +327,7 @@ jobs:
               git config user.name  "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             fi
-            git add botstate.sqlite3
-            git commit -m "chore: 발행 이력 갱신 [skip ci]"
-            # **rebase 대신 SQL 병합.** 바이너리 DB 는 git 이 못 합쳐서
-            # rebase 가 반드시 충돌하고, abort 하면 그 회차 기록이
-            # 통째로 사라진다(2026-10-05 실측: 2시간 유실).
-            git fetch -q origin || true
-            python tools/merge_state.py origin/main || true
-            git add botstate.sqlite3 || true
-            git commit -q --amend --no-edit || true
-            git push
+            bash scripts/save_state.sh "chore: 발행 이력 갱신 [skip ci]" || true
           else
             echo "새 발행 없음 — 커밋 생략"
           fi

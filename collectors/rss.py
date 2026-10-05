@@ -1,6 +1,7 @@
 """RSS 피드 수집기. 국내/해외 뉴스, 금융당국 보도자료 등."""
 import asyncio
 import calendar
+import re
 
 import feedparser
 import httpx
@@ -23,7 +24,16 @@ def _entry_epoch(entry) -> float | None:
         t = getattr(entry, attr, None)
         if t:
             try:
-                return calendar.timegm(t)  # feedparser 는 UTC 기준 struct_time 을 준다
+                # **타임존이 없으면 KST 로 읽는다.** timegm 은 UTC 로 간주하므로
+                # 보험저널처럼 "2026-10-05 07:14:45" 를 그대로 주는 피드는
+                # +9시간 밀린다(2026-10-05 실측 3/3). 한국 금융 매체 피드가
+                # 대부분이라 타임존 없는 값은 KST 로 해석하는 쪽이 맞다.
+                epoch = calendar.timegm(t)
+                raw = (getattr(entry, "published", "")
+                       or getattr(entry, "updated", "") or "")
+                if not re.search(r"(GMT|UTC|[+-]\d{2}:?\d{2}|Z)\s*$", raw.strip()):
+                    epoch -= 9 * 3600
+                return epoch
             except (TypeError, ValueError):
                 continue
     return None

@@ -43,13 +43,15 @@ on:
     - cron: "48 12 * * *"
     - cron: "48 18 * * *"
     # 2026-10-05 저녁의 임시 회차(그날 18:00 을 놓쳐 시간마다 갈아끼운다).
-    # KST 19:15·20·21·23 = UTC 10:15·11:00·12:00·14:00.
+    # KST 19:03·19:48·20:48·22:48 (= 19:15·20·21·23 회차의 12분 전)
+    # = UTC 10:03·10:48·11:48·13:48.
     # 날짜가 지나면 draft_due 가 알아서 무시한다 — cron 만 남아도 무해하다.
     - cron: "3 10 * * *"
     - cron: "48 10 * * *"
     - cron: "48 11 * * *"
     - cron: "48 13 * * *"
-    # KST 00:00·01:00·03:00 = UTC 15:00·16:00·18:00.
+    # KST 23:48·00:48·02:48 (= 00:00·01:00·03:00 회차의 12분 전)
+    # = UTC 14:48·15:48·17:48.
     - cron: "48 14 * * *"
     - cron: "48 15 * * *"
     - cron: "48 17 * * *"
@@ -120,8 +122,11 @@ jobs:
         # 적혀 있었지만 실제로는 준비되지 않았다.
         # 둘 다 --if-due 라 제 시각이 아니면 비용 없이 빠진다.
         run: |
-          python main.py --cstop10 --if-due
-          python main.py --cstop10-draft --if-due
+          # **둘을 분리한다.** GitHub 기본 셸은 bash -eo pipefail 이라
+          # 1행이 죽으면 2행이 아예 실행되지 않는다 — 발행이 터지면 그
+          # 회차의 초안 생성까지 통째로 날아갔다(2026-10-05 감사).
+          python main.py --cstop10 --if-due || echo "  [경고] Top10 발행 실패"
+          python main.py --cstop10-draft --if-due || echo "  [경고] 초안 실패"
 
       - name: 브리프 기록 저장
         # **always() 가 필요하다.** 앞 단계가 타임아웃으로 죽으면 발행은
@@ -130,13 +135,4 @@ jobs:
         run: |
           git config user.name  "bsp-pulse-bot"
           git config user.email "bsp-pulse@users.noreply.github.com"
-          git add botstate.sqlite3 || true
-          git diff --cached --quiet || git commit -m "chore: Morning Brief 기록 [skip ci]"
-          # **rebase 대신 SQL 병합.** 바이너리 DB 는 git 이 못 합쳐서
-          # rebase 가 반드시 충돌하고, abort 하면 그 회차 기록이
-          # 통째로 사라진다(2026-10-05 실측: 2시간 유실).
-          git fetch -q origin || true
-          python tools/merge_state.py origin/main || true
-          git add botstate.sqlite3 || true
-          git commit -q --amend --no-edit || true
-          git push || echo "[경고] push 실패 — 다음 실행에서 다시 시도"
+          bash scripts/save_state.sh "chore: Top10 발행 기록 [skip ci]" || true

@@ -521,6 +521,9 @@ def select(rows: list, count: int | None = None, store=None,
                          q[K_ETYPE] if len(q) > K_ETYPE else "")
                    for _, q in picked):
                 continue
+            _th = csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or "")
+            if any(theme_used.get(t, 0) >= csfit.THEME_CAP[t] for t in _th):
+                continue
             got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
             if got_alt is None or not _acceptable(got_alt[1], picked):
                 continue
@@ -528,8 +531,8 @@ def select(rows: list, count: int | None = None, store=None,
             picked.append((sc, r))
             reserved_keys.add(r[K_KEY])
             cat_used[catg] = cat_used.get(catg, 0) + 1
-        for _t in csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or ""):
-            theme_used[_t] = theme_used.get(_t, 0) + 1
+            for _t in csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or ""):
+                theme_used[_t] = theme_used.get(_t, 0) + 1
             ents = [e for e in (r[K_ENT] or "").split(",") if e]
             h = ents[0] if ents else (r[K_PRI] or "_")
             used[h] = used.get(h, 0) + 1
@@ -591,10 +594,28 @@ def select(rows: list, count: int | None = None, store=None,
                      q[K_ETYPE] if len(q) > K_ETYPE else "")
                for _, q in picked):
             continue
+        # **상한을 여기서도 지킨다.** deferred 는 정의상 범주·주제·엔티티
+        # 상한에 걸려 밀린 것들인데, 재투입 루프가 아무 검사도 안 해서
+        # 자리가 비면 상한이 통째로 무효가 됐다 — 상한 1인 채널·GA 가
+        # 6건까지 들어갔다(2026-10-05 감사, 재현 확인).
+        _catg = csfit.primary_category(r[K_HEAD] or "", r[K_ENT] or "")
+        if cat_used.get(_catg, 0) >= csfit.CATEGORY_CAP.get(_catg, 2):
+            continue
+        _themes = csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or "")
+        if any(theme_used.get(t, 0) >= csfit.THEME_CAP[t] for t in _themes):
+            continue
+        _ents = [e for e in (r[K_ENT] or "").split(",") if e]
+        _head = _ents[0] if _ents else (r[K_PRI] or "_")
+        if used.get(_head, 0) >= settings.daily_brief_max_per_entity:
+            continue
         got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
         if got_alt is None or not _acceptable(got_alt[1], picked):
             continue
         picked.append(got_alt)
+        cat_used[_catg] = cat_used.get(_catg, 0) + 1
+        for _t in _themes:
+            theme_used[_t] = theme_used.get(_t, 0) + 1
+        used[_head] = used.get(_head, 0) + 1
 
     # 최종 배열도 추천 순서를 따른다. 홍보성은 맨 아래.
     picked.sort(key=lambda x: (csfit.is_pr(x[1][K_HEAD] or ""), rank_key(x)))
@@ -1133,6 +1154,10 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
         lo, hi = since - day * back, since - day * (back - 1)
         extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
                                          by_origin=by_origin)
+        # 기사 발행일 하한은 여기서도 건다 — 빠져 있어 10/1 기사가
+        # 10/6 판에 들어왔다(2026-10-05 감사).
+        extra = drop_stale(extra,
+                           datetime.fromtimestamp(lo, KST).strftime("%Y-%m-%d"))
         if not extra:
             continue
         prior = (store.cstop10_recent_clusters(lo - 7 * day)
@@ -1646,19 +1671,41 @@ async def run(client, store, dry_run: bool | None = None,
         await asyncio.sleep(0.5)
     except Exception as exc:                              # noqa: BLE001
         print(f"[cstop10] 머리말 실패 — {exc}")
+    # **본문이 전부 나간 뒤에 기록한다.** 예전엔 한 건 보낼 때마다 기록해서,
+    # 2개 중 1개만 나가고 실패하면 agg_ran_on 이 참이 되고 due() 가 "오늘
+    # 이미 발행함"을 돌려줘 **반쪽 발행이 영구 고정**됐다(2026-10-05 감사).
     first = None
+    sent_ids = []
     for i, m in enumerate(msgs):
-        mid = await publisher.send_raw(
-            client, m, thread,
-            preview_url=preview_urls[i] if i < len(preview_urls) else None)
-        # 발행분을 기록해 둔다 — 나중에 이 메시지만 골라 지울 수 있게.
-        store.record_agg_message("cs_top10", until + i, mid)
-        if i == 0 and _header_id:
-            # 머리말도 나중에 지울 수 있게 함께 남긴다(본문이 나간 뒤에).
-            store.record_agg_message("cs_top10", until - 1, _header_id)
+        try:
+            mid = await publisher.send_raw(
+                client, m, thread,
+                preview_url=preview_urls[i] if i < len(preview_urls) else None)
+        except Exception as exc:                            # noqa: BLE001
+            print(f"[cstop10] ⚠️ 본문 {i + 1}/{len(msgs)} 전송 실패 — {exc}")
+            mid = None
+        if mid is None:
+            # 하나라도 못 보내면 기록을 남기지 않는다 — 다음 회차가 재시도한다.
+            for _ts, _id in sent_ids:
+                try:
+                    await publisher.delete_message(client, _id)
+                except Exception:                           # noqa: BLE001
+                    pass
+            if _header_id:
+                try:
+                    await publisher.delete_message(client, _header_id)
+                except Exception:                           # noqa: BLE001
+                    pass
+            print("[cstop10] ⚠️ 반쪽 발행을 거둬들였다 — 다음 회차에 재시도")
+            return None
+        sent_ids.append((until + i, mid))
         first = first or mid
         if i < len(msgs) - 1:
             await asyncio.sleep(0.6)
+    for _ts, _id in sent_ids:
+        store.record_agg_message("cs_top10", _ts, _id)
+    if _header_id:
+        store.record_agg_message("cs_top10", until - 1, _header_id)
     # 🔗 top10(링크용) — 같은 10건의 원문 주소를 한 건씩 따로 보낸다.
     # 본문 발행이 끝난 뒤에 한다. 이쪽이 실패해도 Top10 은 이미 나가 있어야 한다.
     links_thread = topics.thread_id_for("cs_top10_links")
