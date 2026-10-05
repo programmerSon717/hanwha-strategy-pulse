@@ -67,7 +67,12 @@ permissions:
 concurrency:
   # brief.yml 과 같은 그룹을 쓰면 07:00 브리프와 07:05 Top10 이 서로를 밀어낸다
   # (GitHub 은 그룹당 대기열 1개). 백업끼리 취소하면 보험이 아니다.
-  group: bsp-pulse-top10
+  #
+  # **run_id 를 섞어 회차마다 그룹을 가른다.** 같은 그룹이면 06:51 백업이
+  # 대기 중일 때 06:52 백업이 들어와 앞의 것을 취소한다 — 삼중 보험이
+  # 사실상 일중 보험으로 무너진다(2026-10-05 감사). 가르면 셋이 각자
+  # 돌고, --if-due 가 "오늘 이미 발행함"을 보고 한 번만 내보낸다.
+  group: bsp-pulse-top10-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
