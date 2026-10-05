@@ -22,7 +22,9 @@ FAR = 86400
 def main() -> int:
     now = datetime.now(KST)
     best = FAR
-    for hhmm in (settings.cs_top10_time, settings.daily_brief_time):
+    marks = [settings.cs_top10_time, settings.daily_brief_time]
+    marks += list(settings.cs_top10_draft_times)   # 18:00·22:00·04:00 초안
+    for hhmm in marks:
         try:
             hh, _, mm = str(hhmm).partition(":")
             sched = now.replace(hour=int(hh), minute=int(mm),

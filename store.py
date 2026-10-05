@@ -536,6 +536,55 @@ class Store:
                     out.add(f"{host}#{num}")
         return out
 
+    def save_top10_draft(self, publish_date: str, keys: list,
+                         quality: float, built_at: float):
+        """다음 발행분 **초안**을 저장한다. 같은 날짜는 덮어쓴다.
+
+        왜 초안을 미리 만드나(2026-10-05 사용자 지정): 06:50 에 즉석에서 뽑으면
+        "이상하게 만들어지거나·전날자를 못 가져오거나·10건이 안 되는" 사고를
+        그 자리에서 알 수 없다. 전날 18:00·22:00·당일 04:00 에 미리 만들어 두고,
+        **뒤에 만든 것이 더 좋으면 갈아치운다.** 06:50 은 확정된 초안을 내보내기만
+        한다. 품질도 올라가고, 사고가 나도 06:50 전에 드러난다.
+        """
+        with self._conn() as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS top10_draft (
+                             publish_date TEXT PRIMARY KEY,
+                             keys TEXT, quality REAL, built_at REAL)""")
+            c.execute("INSERT OR REPLACE INTO top10_draft"
+                      " (publish_date, keys, quality, built_at) VALUES (?,?,?,?)",
+                      (publish_date, ",".join(keys), quality, built_at))
+
+    def get_top10_draft(self, publish_date: str):
+        """(keys, quality, built_at) 또는 None."""
+        with self._conn() as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS top10_draft (
+                             publish_date TEXT PRIMARY KEY,
+                             keys TEXT, quality REAL, built_at REAL)""")
+            row = c.execute("SELECT keys, quality, built_at FROM top10_draft"
+                            " WHERE publish_date=?", (publish_date,)).fetchone()
+        if not row:
+            return None
+        return ([k for k in (row[0] or "").split(",") if k], row[1], row[2])
+
+    def rows_by_keys(self, keys: list) -> list:
+        """키 목록을 cstop10_candidates 와 **같은 컬럼 순서**로 되돌린다.
+
+        초안은 키만 저장한다. 본문·요약은 published 에 이미 있으므로 발행
+        시점에 다시 읽는다 — 초안에 본문을 복사해 두면 그 사이 갱신된 내용을
+        놓친다.
+        """
+        if not keys:
+            return []
+        q = ",".join("?" * len(keys))
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT key, headline, source_url, primary_topic, secondary_topics,"
+                "       strategic_score, is_key_issue, event_cluster_id, main_entities,"
+                "       lede, why_it_matters, sent_at, event_type, origin_at, text"
+                f"  FROM published WHERE key IN ({q})", keys).fetchall()
+        order = {k: i for i, k in enumerate(keys)}
+        return sorted(rows, key=lambda r: order.get(r[0], 999))
+
     def mark_cstop10(self, keys: list, date_str: str):
         with self._conn() as c:
             c.executemany("UPDATE published SET cs_top10_date=? WHERE key=?",

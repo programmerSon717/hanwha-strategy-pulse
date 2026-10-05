@@ -35,6 +35,7 @@ from collectors import (binance, bithumb, upbit, rss, telegram_channels, tg_web,
                         blockmedia_archive, blockmedia_research, coin68,
                         regulation)
 from config import settings
+import csfit
 import events
 from models import NewsItem
 import gnews
@@ -400,6 +401,7 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
     stats: dict[str, int] = {}
     # BSP 판정 카운터 (§35 집계 로깅)
     rejected = below = stored_only = clustered = paywalled = lowconf = 0
+    offbrief = 0
     swapped = 0
     event_index = events.EventIndex()
     key_issue_count = store.key_issues_since(time.time() - 24 * 3600)
@@ -551,6 +553,33 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
                    dry=dry_run)
             stored_only += 1
             print(f"[저장만] score {score} {item.title[:48]}")
+            continue
+
+        # ── 발주 기준(csfit) 하한 — 일반 탭에도 적용한다 ──
+        #
+        # 2026-10-05 감사에서 드러난 구조적 구멍이다. 여태 일반 탭 게시는
+        # 모델의 strategic_score 하나로만 결정했고, 발주자가 준 기준을 구현한
+        # csfit 은 📌 Top10 단계에서만 쓰였다. 그래서 키워드 78개 중 **하나도**
+        # 안 걸리는 기사가 모델 점수 68~75 로 매일 올라갔다 — 발행 144건 중
+        # 17건(11.8%)이 csfit 범주 '기타' 였다(퇴직연금 5건·은행 해킹 10건이 주범).
+        #
+        # 모델 점수는 "전략적으로 중요한가"를 보고, csfit 은 "**이 팀이 실제로
+        # 공유하는 주제인가**"를 본다. 둘은 다른 질문이라 둘 다 통과해야 한다.
+        #
+        # 하한은 settings.general_fit_threshold(기본 20) 다. 그 값을 고른 근거는
+        # config.py 의 같은 이름 주석에 적어 두었다 — 20 미만은 RULES 어느 범주에도
+        # 안 걸리는 기사와 정확히 일치한다.
+        _fit, _rules = csfit.score(
+            data.get("title_ko") or item.title,
+            ",".join(data.get("main_entities") or []),
+            topic, score)
+        if _fit < settings.general_fit_threshold:
+            _judge(item, key, relevant=True, score=score, topic=topic,
+                   reason=f"발주 기준 미달(csfit {_fit} < "
+                          f"{settings.general_fit_threshold})",
+                   dry=dry_run)
+            offbrief += 1
+            print(f"[기준미달] csfit {_fit} (모델 {score}) {item.title[:40]}")
             continue
 
         # ── 유료기사는 **같은 사건의 무료 매체 기사로 갈아탄다** ──
@@ -750,6 +779,8 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
     if lowconf:
         print(f"[집계] 본문 접근 실패라 제외 {lowconf}건 "
               f"— 본문이 열리는 기사를 기다린다")
+    if offbrief:
+        print(f"[집계] 발주 기준(csfit) 미달로 제외 {offbrief}건")
     if swapped:
         print(f"[집계] 유료 → 무료 매체로 갈아탐 {swapped}건")
 
@@ -870,6 +901,23 @@ async def main():
                 print(f"[backfill] 미발행 '봤음' 기록 {_forgot}건 해제 — 다시 판정한다")
             print(f"[backfill] 수집 {len(items)}건 — 판정·발행으로 넘긴다")
             await process_items(client, items, warm=False, dry_run=dry_run)
+            return
+
+        if "--cstop10-draft" in sys.argv:
+            # 다음 06:50 발행분 초안을 만든다. --if-due 를 붙이면 설정한
+            # 시각(18:00·22:00·04:00)일 때만 돈다. cstop10.build_draft 주석 참고.
+            import cstop10
+            if "--if-due" in sys.argv:
+                ok, why = cstop10.draft_due(store)
+                if not ok:
+                    print(f"[draft] 건너뜀 — {why}")
+                    return
+                print(f"[draft] {why}")
+            _target = cstop10.next_publish_ts()
+            print(f"[draft] 대상 발행 "
+                  f"{datetime.fromtimestamp(_target, KST):%m-%d %H:%M} KST")
+            await cstop10.build_draft(store, _target,
+                                      dry_run=bool(dry_run or settings.dry_run))
             return
 
         if "--cstop10" in sys.argv:

@@ -193,6 +193,11 @@ jobs:
             python main.py --cstop10 --if-due || echo "  [경고] Top10 실패"
             python main.py --brief   --if-due || echo "  [경고] Brief 실패"
 
+            # 다음 06:50 발행분 초안. 18:00·22:00·04:00 에만 실제로 돈다.
+            # 뒤에 만든 것이 더 기준에 맞으면 앞 초안을 갈아치운다.
+            # 06:50 은 확정된 초안을 내보내기만 한다(2026-10-05 사용자 지정).
+            python main.py --cstop10-draft --if-due || echo "  [경고] 초안 실패"
+
             # 시간별 다이제스트: KST 기준 매시 첫 회차에서만.
             # 중복은 digest_log 가 막지만, 불필요한 모델 호출을 줄이려 여기서도 건다.
             MIN=$(TZ=Asia/Seoul date +%-M)
@@ -250,6 +255,7 @@ jobs:
               # 아니면 --if-due 가 즉시 빠지므로 비용이 없다.
               python main.py --cstop10 --if-due || echo "  [경고] Top10 실패"
               python main.py --brief   --if-due || echo "  [경고] Brief 실패"
+              python main.py --cstop10-draft --if-due || echo "  [경고] 초안 실패"
               save_state
               echo "::endgroup::"
             done

@@ -67,12 +67,32 @@ def _parse_published(html_text: str) -> float | None:
         g = m.groups()
         try:
             if len(g) == 1:
-                t = _dt.datetime.fromisoformat(g[0].strip().replace("Z", "+00:00"))
+                raw = g[0].strip()
+                t = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
                 if t.tzinfo is None:
                     t = t.replace(tzinfo=KST)
-                return t.timestamp()
-            y, mo, d, hh, mm = (int(x) for x in g)
-            return _dt.datetime(y, mo, d, hh, mm, tzinfo=KST).timestamp()
+                ts = t.timestamp()
+                # **국내 매체는 한국 시각을 쓰면서 Z(UTC)를 붙이는 곳이 있다.**
+                # sateconomy 가 '2026-10-05T04:10:09Z' 로 적어 UTC 로 읽으면
+                # 13:10 이 되는데, 화면에는 '2026.10.05 04:10' 로 찍힌다.
+                # 실제 발행은 04:10 KST 였다(2026-10-05 감사: 봇이 09:22 에
+                # 내보낸 기사인데 발행시각이 13:10 로 기록됐다).
+                #
+                # 그래서 **같은 페이지의 평문 날짜와 대조한다.** ISO 의 시·분이
+                # 평문과 같으면 그 ISO 는 현지시각을 적은 것이므로 KST 로 읽는다.
+                naive = t.replace(tzinfo=None)
+                if re.search(
+                        rf"{naive.year}[.\-/]\s*{naive.month:02d}[.\-/]\s*"
+                        rf"{naive.day:02d}[^\d]{{1,4}}{naive.hour:02d}:{naive.minute:02d}",
+                        html_text):
+                    ts = naive.replace(tzinfo=KST).timestamp()
+            else:
+                y, mo, d, hh, mm = (int(x) for x in g)
+                ts = _dt.datetime(y, mo, d, hh, mm, tzinfo=KST).timestamp()
+            # 마지막 안전장치 — 기사 발행시각이 미래일 수는 없다.
+            if ts > _dt.datetime.now(KST).timestamp():
+                continue
+            return ts
         except (ValueError, TypeError):
             continue
     return None
@@ -177,7 +197,20 @@ async def main():
             print(f"  {i:>2}. 적합{fit:>3} [{data['category']:<20}] {data['headline'][:42]}")
             if origin is None:
                 print(f"       ⚠️ 발행시각을 못 찾았다 — 창 끝 시각으로 대신한다")
-            picked.append((fit, _row(data, real, origin or asof, text)))
+            row = _row(data, real, origin or asof, text)
+            # **같은 사건이 두 번 들어가지 않게 한다.** 사람이 고른 목록이라
+            # 그대로 올린다고 봤는데, 빠진 자리를 봇이 채우면서 1번과 같은
+            # 사안이 10번에 또 들어갔다(2026-10-05: 저축은행 인수·K-ICS 50%).
+            dup = next((q for _, q in picked
+                        if K._same(row[K.K_HEAD] or "", row[K.K_ENT] or "",
+                                   row[K.K_ETYPE] or "",
+                                   q[K.K_HEAD] or "", q[K.K_ENT] or "",
+                                   q[K.K_ETYPE] or "")), None)
+            if dup is not None:
+                print(f"       ↳ 같은 사건 제외 — 앞 건과 동일: "
+                      f"{(dup[K.K_HEAD] or '')[:30]}")
+                continue
+            picked.append((fit, row))
 
     if not picked:
         sys.exit("발행할 것이 없습니다.")

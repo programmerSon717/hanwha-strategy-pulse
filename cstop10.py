@@ -64,9 +64,21 @@ def window(now: float | None = None) -> tuple[float, float, str]:
     config.cs_top10_window_hours 주석에 있다.
     """
     now = now or datetime.now(KST).timestamp()
-    until = now
-    since = now - settings.cs_top10_window_hours * 3600
-    label = datetime.fromtimestamp(now, KST).strftime("%Y.%m.%d %a")
+    t = datetime.fromtimestamp(now, KST)
+    # 창의 끝은 **그날 06:00** 이다(settings.cs_top10_window_end). 발행 시각이
+    # 아니라 그보다 50분 앞선다 — 사용자 지정 "전날 6:50am~당일 06:00am".
+    hh, _, mm = settings.cs_top10_window_end.partition(":")
+    end = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    if end > t:                      # 아직 그 시각 전이면 전날 창이다
+        end -= timedelta(days=1)
+    until = end.timestamp()
+    # 시작은 '전날 06:50'. 끝이 06:00 이므로 길이는 24시간이 아니라 23시간 10분이다.
+    # (24시간을 그대로 빼면 전날 06:00 이 되어 06:00~06:50 구간이 두 번 실린다 —
+    #  전날 판의 끝과 겹친다.)
+    hh2, _, mm2 = settings.cs_top10_time.partition(":")
+    start = (end - timedelta(days=1)).replace(hour=int(hh2), minute=int(mm2))
+    since = start.timestamp()
+    label = t.strftime("%Y.%m.%d %a")
     return since, until, label
 
 
@@ -408,10 +420,18 @@ def select(rows: list, count: int | None = None, store=None,
     reserved_keys = set()
     for catg, floor in csfit.CATEGORY_FLOOR.items():
         got = 0
-        for sc, r in normal:
+        # 그 범주에서 **점수가 높은 순**으로 본다. 보장석은 한 자리뿐이라
+        # 아무거나가 아니라 그 범주 최고점이 들어가야 한다.
+        _cands = sorted(
+            (x for x in normal
+             if csfit.primary_category(x[1][K_HEAD] or "") == catg),
+            key=lambda x: -x[0])
+        for sc, r in _cands:
             if got >= floor:
                 break
-            if sc < csfit.FLOOR_MIN_SCORE:
+            # 느슨한 하한을 쓴다 — 자리를 비워 두느니 그 범주 최고점을 넣는다.
+            # csfit.FLOOR_RELAXED_MIN 주석 참고.
+            if sc < csfit.FLOOR_RELAXED_MIN:
                 continue
             if csfit.primary_category(r[K_HEAD] or "") != catg:
                 continue
@@ -912,6 +932,105 @@ def topup(picked: list, rows: list, store, now: float, want: int,
     return picked
 
 
+def quality_of(picked: list) -> float:
+    """초안끼리 견주는 점수. **건수가 먼저, 그다음이 적합도 평균**이다.
+
+    10건을 채우는 것이 1순위다(사용자가 거듭 지정). 같은 건수면 적합도 평균이
+    높은 쪽을 쓴다. 건수에 큰 가중치를 둬서 9건·평균 60 보다 10건·평균 40 이
+    이기도록 한다 — 자리가 빈 Top10 은 그 자체로 사고다.
+    """
+    if not picked:
+        return 0.0
+    fits = []
+    for sc, r in picked:
+        fit, _ = csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
+                             r[K_PRI] or "", r[K_SCORE])
+        fits.append(fit)
+    return len(picked) * 1000 + sum(fits) / len(fits)
+
+
+def select_for(store, asof: float, by_origin: bool = True) -> list:
+    """그 발행 시각 기준으로 뽑은 결과. run() 과 같은 길을 쓴다."""
+    since, until, _label = window(asof)
+    want = settings.daily_brief_count
+    rows = store.cstop10_candidates(since, until, settings.discard_threshold,
+                                    by_origin=by_origin)
+    picked = select(rows, store=store, now=asof)
+    if len(picked) < want:
+        _prior = (store.cstop10_recent_clusters(since - 7 * 24 * 3600)
+                  + store.published_clusters_before(since))
+        picked = topup(picked, rows, store, asof, want, prior=_prior,
+                       ignore_cat_cap=True)
+    day = 24 * 3600
+    back = 0
+    while len(picked) < want and back < settings.cs_top10_fill_days:
+        back += 1
+        lo, hi = since - day * back, since - day * (back - 1)
+        extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
+                                         by_origin=by_origin)
+        if not extra:
+            continue
+        prior = (store.cstop10_recent_clusters(lo - 7 * day)
+                 + store.published_clusters_before(lo))
+        picked = topup(picked, extra, store, asof, want, prior=prior)
+    return picked
+
+
+async def build_draft(store, asof: float, dry_run: bool = False) -> dict:
+    """다음 발행분 초안을 만들고, **기존 초안보다 나을 때만** 갈아치운다.
+
+    2026-10-05 사용자 지정: 전날 18:00·22:00·당일 04:00 에 세 번 만들고,
+    뒤에 만든 것이 더 기준에 맞으면 앞서 만든 것을 지우고 대체한다.
+    """
+    import time as _t
+    pub = datetime.fromtimestamp(asof, KST).strftime("%Y-%m-%d")
+    picked = select_for(store, asof)
+    q = quality_of(picked)
+    prev = store.get_top10_draft(pub)
+    n = len(picked)
+    avg = (q - n * 1000) if n else 0
+    if prev and prev[1] >= q:
+        pn = int(prev[1] // 1000)
+        print(f"[draft] {pub} 유지 — 기존 {pn}건(품질 {prev[1]:.1f})이 "
+              f"이번 {n}건(품질 {q:.1f})보다 낫거나 같다")
+        return {"replaced": False, "count": pn, "quality": prev[1]}
+    if not dry_run:
+        store.save_top10_draft(pub, [r[K_KEY] for _, r in picked], q, _t.time())
+    was = f"{int(prev[1]//1000)}건" if prev else "없음"
+    print(f"[draft] {pub} 갱신 — {was} → {n}건 (적합도 평균 {avg:.1f})")
+    for i, (_, r) in enumerate(picked, 1):
+        print(f"   {i:>2}. {_posted_label(r)[:16]} {(r[K_HEAD] or '')[:44]}")
+    return {"replaced": True, "count": n, "quality": q}
+
+
+def draft_due(store, now: float | None = None) -> tuple[bool, str]:
+    """지금이 초안을 만들 시각인가. (해야하나, 이유)
+
+    설정한 시각(기본 18:00·22:00·04:00)을 **지난 지 1시간 안**이면 만든다.
+    상시 루프가 20분마다 물어보므로 시각마다 한 번은 반드시 걸린다.
+    """
+    now = now or datetime.now(KST).timestamp()
+    t = datetime.fromtimestamp(now, KST)
+    for hhmm in settings.cs_top10_draft_times:
+        hh, _, mm = hhmm.partition(":")
+        mark = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        gap = (t - mark).total_seconds()
+        if 0 <= gap < 3600:
+            return True, f"{hhmm} 초안 생성 시각"
+    return False, "초안 생성 시각 아님"
+
+
+def next_publish_ts(now: float | None = None) -> float:
+    """지금 기준으로 **다음 06:50**. 초안은 그 시각 기준으로 만든다."""
+    now = now or datetime.now(KST).timestamp()
+    t = datetime.fromtimestamp(now, KST)
+    hh, _, mm = settings.cs_top10_time.partition(":")
+    nxt = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    if nxt <= t:
+        nxt += timedelta(days=1)
+    return nxt.timestamp()
+
+
 async def run(client, store, dry_run: bool | None = None,
               asof: float | None = None) -> int | None:
     """asof 를 주면 **그 시각 기준**으로 뽑는다(과거분 소급 생성용).
@@ -935,7 +1054,26 @@ async def run(client, store, dry_run: bool | None = None,
                                         by_origin=by_origin)
         return rows, select(rows, store=store, now=asof)
 
-    rows, picked = _pick(since)
+    # **확정된 초안이 있으면 그걸 그대로 낸다.**
+    # 전날 18:00·22:00·당일 04:00 에 미리 만들어 검증해 둔 것이다. 06:50 에
+    # 즉석에서 다시 뽑으면 그 사이 들어온 기사로 결과가 달라져, 미리 확인한
+    # 의미가 없어진다(2026-10-05 사용자 지정).
+    _pub = datetime.fromtimestamp(asof or until, KST).strftime("%Y-%m-%d")
+    _draft = store.get_top10_draft(_pub)
+    if _draft and _draft[0]:
+        _rows = store.rows_by_keys(_draft[0])
+        if len(_rows) == len(_draft[0]):
+            _built = datetime.fromtimestamp(_draft[2], KST)
+            print(f"[cstop10] 확정 초안 사용 — {len(_rows)}건 "
+                  f"({_built:%m-%d %H:%M} 생성)")
+            picked = [(0, r) for r in _rows]
+            rows = _rows
+        else:
+            print(f"[cstop10] 초안 {len(_draft[0])}건 중 {len(_rows)}건만 복원 — "
+                  f"새로 뽑는다")
+            _draft = None
+    if not _draft or not _draft[0]:
+        rows, picked = _pick(since)
 
     # 10건이 안 차면 **전날 기사에서 부족분만 채운다** (2026-10-05 사용자 지정).
     #
@@ -945,13 +1083,15 @@ async def run(client, store, dry_run: bool | None = None,
     #
     # 기준은 그대로다 — 같은 사건은 절대 두 번 싣지 않고, 범주·엔티티 상한과
     # 유료 교체·본문 확보 검사를 전부 통과한 것만 더한다. topup() 주석 참고.
+    _used_draft = bool(_draft and _draft[0] and picked)
+
     # **창 안에 남은 것을 먼저 다 쓴다** (2026-10-05 지적).
     #
     # 범주 상한에 막혀 창 안 기사가 7건이나 남았는데 전날로 넘어가 10/1~10/2
     # 기사를 가져왔다. 상한은 "한 범주가 독식하지 않게" 하려는 것이지 "창 밖에서
     # 가져오라"는 뜻이 아니다. 10 건이 안 차면 상한을 풀어서라도 **그날 창 안을
     # 먼저 비운다.** 그래도 모자랄 때만 전날로 간다.
-    if len(picked) < want:
+    if len(picked) < want and not _used_draft:
         print(f"[cstop10] {len(picked)}건 — 범주 상한을 풀고 창 안에서 먼저 채운다")
         # **기게재 검사를 빠뜨리면 안 된다.** 예전엔 published_clusters_before 만
         # 넘겨서, 어제 Top10 에 실린 사건의 다른 기사가 오늘 다시 들어왔다

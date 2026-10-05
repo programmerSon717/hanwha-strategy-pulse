@@ -89,6 +89,19 @@ class Settings:
     # 이 저장소는 공개돼 있어 조직 이름을 코드에 박으면 그대로 드러난다.
     # 로컬은 .env(커밋 안 됨), Actions 는 Secret 으로 준다.
     # 없어도 발행은 정상이다 — 꼬리표만 중립으로 나간다.
+    # 일반 탭 게시의 **발주 기준 하한**(csfit 적합도).
+    #
+    # 20 인 이유: 실측 144건에 대보면 20 미만은 csfit RULES 11개 범주 중
+    # **어느 하나도 안 걸리는** 14건과 정확히 일치한다(점수 17~18, 전부
+    # strategic_score×0.25 만으로 만들어진 값). 퇴직연금·은행 해킹보안처럼
+    # 발주 키워드에 근거가 없는 기사들이다.
+    #
+    # 30(FLOOR_MIN_SCORE)으로 올리면 28건이 더 잘리는데, 그중에는 메트라이프
+    # K-ICS 자본관리·하나금융 자사주 소각·최태원 지배력 방어처럼 **기준에 맞는**
+    # 기사가 섞여 있다. 그래서 Top10 의 보장석 하한(30)과 일부러 다르게 둔다 —
+    # 일반 탭은 넓게 담고, Top10 에서 좁히는 구조다.
+    general_fit_threshold: int = int(os.getenv("GENERAL_FIT_THRESHOLD", "20"))
+
     cs_top10_label: str = os.getenv("CS_TOP10_LABEL", "Top10")
     cs_links_label: str = os.getenv("CS_LINKS_LABEL", "top10(링크용)")
     # Top10 을 뽑는 시간 창(시간). 평소에는 24 가 맞다 — '어제 아침부터 지금까지'.
@@ -99,6 +112,20 @@ class Settings:
     # 24h 창 16건 → 선정 4건 / 72h 창 57건). 그때만 CS_TOP10_WINDOW_HOURS=72 로
     # 한 번 돌리면 된다. 멈춘 기간의 뉴스는 팀에 공유된 적이 없으니 중복도 아니다.
     cs_top10_window_hours: int = int(os.getenv("CS_TOP10_WINDOW_HOURS", "24"))
+    # 창의 **끝** 시각. 발행(06:50)보다 50분 앞선다 (2026-10-05 사용자 지정:
+    # "전날 6:50am~당일 06:00am"). 그 50분은 기사를 고르고 Instant View 를
+    # 만드는 시간이다 — 발행 직전까지 들어오는 기사를 쫓으면 06:50 을 놓친다.
+    cs_top10_window_end: str = os.getenv("CS_TOP10_WINDOW_END", "06:00")
+
+    # 사전 생성 시각. 다음날 06:50 에 내보낼 것을 미리 만들어 둔다.
+    # 뒤에 만든 것이 더 기준에 맞으면 앞서 만든 것을 **대체**한다.
+    # 목적은 품질 향상과, 06:50 에 "이상하게 만들어지거나·전날자를 못 가져오거나
+    # ·10건이 안 되는" 사고를 미리 잡는 것이다(2026-10-05 사용자 지정).
+    cs_top10_draft_times: list = field(default_factory=lambda: [
+        t.strip() for t in
+        os.getenv("CS_TOP10_DRAFT_TIMES", "18:00,22:00,04:00").split(",")
+        if t.strip()
+    ])
     # 10건이 안 차면 창을 **뒤로** 넓혀 가며 다시 뽑는다 (2026-10-05 사용자 지정).
     #
     #   "월요일 06:50 에 나가야 하는 게 10건인데(일요일 기사 수집) 10건이 안 되면
@@ -113,7 +140,12 @@ class Settings:
     # 뿐이고, '무엇을 고를지'는 건드리지 않는다.
     # 모자라면 **하루씩 앞으로** 가며 부족분만 채운다. 창을 넓혀 다시 뽑지 않는다
     # (다시 뽑으면 범주 상한 경쟁이 달라져 오히려 줄었다 — cstop10.topup 주석).
-    cs_top10_fill_days: int = int(os.getenv("CS_TOP10_FILL_DAYS", "3"))
+    # 3 → 1 (2026-10-05 지적). 3일을 열어 두니 10/4 판에 10/1 기사가 실렸다.
+    #
+    # 사용자가 허용한 범위는 "월요일 분이 일요일 기사로 안 차면 **토요일**
+    # 저녁·오후 것" 즉 **바로 전날 하루**까지다. 그 이상 거슬러 가면 이미
+    # 팀이 며칠 전에 본 뉴스가 오늘 Top10 에 올라온다.
+    cs_top10_fill_days: int = int(os.getenv("CS_TOP10_FILL_DAYS", "1"))
     daily_brief_count: int = int(os.getenv("DAILY_BRIEF_COUNT", "10"))
     # 같은 회사/같은 사건이 브리프를 독식하지 않게 하는 상한 (§24-6)
     daily_brief_max_per_entity: int = int(os.getenv("DAILY_BRIEF_MAX_PER_ENTITY", "4"))
