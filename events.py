@@ -104,6 +104,7 @@ def parts(data: dict, title: str = "") -> tuple:
     return _entity_set(data, title), action, bucket
 
 
+
 def same_event(a: tuple, title_a: str, b: tuple, title_b: str) -> bool:
     """두 기사가 같은 사건인가 (2차 판정).
 
@@ -121,12 +122,87 @@ def same_event(a: tuple, title_a: str, b: tuple, title_b: str) -> bool:
         return False
     if not (ents_a & ents_b):
         return False
-    return similarity(title_a, title_b) >= SOFT_TITLE_SIMILARITY
+    # 제목 유사도를 **내용 낱말로만** 재도록 좁혀 봤으나 되돌렸다(2026-10-05).
+    # 그러면 "한화생명, 애큐온 인수 확정" × "…인수 통해 여신금융 진출" 이
+    # 0.25 에서 0.125 로 떨어져 갈라진다 — 2026-10-01 애큐온 3중 발행 사고를
+    # 막으려고 넣은 회귀 검사가 깨진다(tests/bsp_cases.py). 중복이 누락보다
+    # 나쁘다는 것이 발주자의 일관된 지시이므로 원래 기준을 유지한다.
+    if similarity(title_a, title_b) >= SOFT_TITLE_SIMILARITY:
+        return True
+    # **집합 포함 관계.** 한쪽 엔티티 집합이 다른 쪽을 품으면 제목 표현이
+    # 달라도 같은 사건으로 본다. 같은 긴급소집 건이 주체를 하나만 적었는지
+    # 둘 다 적었는지로 갈려 네 번 나간 사고가 있었다(2026-10-05).
+    #
+    # 포함 관계만으로는 넓다 — 시간창이 3일이라 그 사이 금융위 규제 기사가
+    # 전부 한 덩어리가 된다. 그래서 변별력 있는 낱말이 겹칠 때만 묶는다.
+    if ents_a <= ents_b or ents_b <= ents_a:
+        return _distinctive_overlap(title_a, title_b, ents_a | ents_b)
+    return False
+
+
+# 변별력이 없어 두 기사를 잇는 근거가 못 되는 낱말.
+# "금융권"·"당국"·"추진" 은 규제 기사 절반에 들어 있어, 이것만 겹쳤다고
+# 같은 사건으로 보면 서로 다른 정책이 한 덩어리가 된다.
+_GENERIC_TOKENS = {
+    "금융", "금융권", "금융사", "금융위", "금감원", "당국", "금융당국",
+    "은행", "보험", "증권", "업계", "시장", "추진", "검토", "확대", "강화",
+    "방안", "대응", "논의", "회의", "개최", "예정", "전망", "계획", "관련",
+    "따른", "위해", "대한", "오늘", "내일", "올해", "내년", "정부", "국내",
+}
+
+
+# 사건의 '종류'만 말할 뿐 어느 사건인지는 못 가르는 낱말.
+# action 그룹이 이미 같다는 전제에서 보므로 이 말들은 근거가 되지 못한다.
+_ACTION_TOKENS = {
+    "인수", "매각", "합병", "지분", "출자", "투자", "협약", "제휴", "체결",
+    "추진", "확정", "검토", "발표", "출시", "진출", "설립", "제재", "개편",
+}
+
+
+def _distinctive_overlap(a: str, b: str, ents: frozenset = frozenset()) -> bool:
+    """두 제목이 **변별력 있는 낱말**을 공유하는가.
+
+    엔티티 이름은 근거에서 뺀다. 엔티티가 겹치는 것은 포함 관계 검사가 이미
+    확인했고, 여기서 또 세면 **같은 회사의 서로 다른 딜**이 한 사건으로
+    뭉개진다("한화생명, 애큐온 인수 확정" × "한화생명·교보생명, 저축은행
+    인수 추진" — 겹치는 낱말이 회사 이름과 '인수' 뿐인데도 묶였다).
+    """
+    drop = set(_GENERIC_TOKENS) | _ACTION_TOKENS
+    for e in ents:
+        drop |= _tokens(e)
+        drop.add(_norm(e))
+    ta = {t for t in _tokens(a) if t not in drop}
+    tb = {t for t in _tokens(b) if t not in drop}
+    return bool(ta & tb)
+
+
+def coverage(data: dict, title: str = "") -> int:
+    """기사가 **얼마나 큰 개념을 담고 있는가**. 클수록 포괄적이다.
+
+    발주자 지시(2026-10-05): "집합개념으로 따지면 더 큰 개념의 내용을
+    담고있는거만 하나만 올려."
+
+    실제 사고: 같은 긴급소집 건이 네 번 나갔다.
+      · "금융위, 금융권 해킹 피해 확산에 전 금융권 긴급 소집"      엔티티 1
+      · "금융당국, 2금융권 해킹 피해 확산에 따른 긴급 소집"         엔티티 2
+      · "은행·2금융권 잇따른 AI 해킹 우려에 금융당국, 전 금융사
+         CEO 긴급대응 회의 소집"                                엔티티 3  ← 이것만 남겨야 한다
+    세 번째가 주체(금융위+금감원)도, 대상(은행+2금융권+전 금융사 CEO)도,
+    맥락(AI 해킹)도 모두 포함한다. 나머지는 그 부분집합이다.
+    """
+    ents = len(_entity_set(data, title))
+    # 범위를 넓히는 표현. "전 금융사"·"전 금융권" 은 개별 회사보다 큰 집합이다.
+    scope = len(re.findall(r"전\s*금융|금융권\s*전체|업계\s*전반|전\s*업권"
+                           r"|잇따른|잇단|전반|일제히|동시", _norm(title)))
+    return ents * 10 + scope * 5 + min(len(_tokens(title)), 12)
 
 
 def representative_score(data: dict, source: str, body_len: int) -> tuple:
     """대표기사 선택용 정렬 키 (§21). 클수록 대표에 가깝다."""
     return (
+        # 0. **포괄성이 먼저다.** 같은 사건이면 더 큰 개념을 담은 것만 낸다
+        #    (2026-10-05 발주자 지시). 아래 항목들은 포괄성이 같을 때의 순서다.
+        coverage(data, data.get("title_ko") or ""),
         source_weight(source),                      # 1. Source quality
         min(body_len, 8000),                        # 2. Information richness
         int(bool(data.get("material_update"))),     # 4. Latest material info
