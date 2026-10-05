@@ -286,6 +286,31 @@ CATEGORY_CAP = {
 }
 
 
+
+# 좁은 주제의 **주제 상한.** CATEGORY_CAP 은 대표범주 하나만 보는데,
+# 대표범주는 가중치 순서로 정해져서 같은 주제 기사가 서로 다른 범주로
+# 흩어진다. 실측(2026-10-05): GA 기사 4건이 한화 / 채널·GA / 경쟁 보험사 /
+# AI·디지털 로 갈려 상한을 전부 피해 갔다. 발주자가 보기엔 "GA 얘기만 넷"
+# 이고 집합론 위반이다. 그래서 **매치된 모든 범주**로 한 번 더 센다.
+#
+# 넓은 범주(한화·M&A·경쟁 보험사)는 부수 언급이 흔해 이 방식이 과하다.
+# 좁고 주제가 뚜렷한 축만 건다.
+THEME_CAP = {
+    "채널·GA": 1,
+    "연금·WM": 1,
+    "디지털자산": 2,
+    "빅테크·핀테크": 2,
+    "PEF·IB": 1,
+    "자본·밸류업": 2,
+}
+
+
+def themes_of(title: str, entities: str = "") -> list:
+    """매치된 범주 중 **주제 상한을 거는 것들.**"""
+    text = f"{title} {entities or ''}"
+    return [name for name, pat, _ in RULES
+            if name in THEME_CAP and re.search(pat, text, re.I)]
+
 def primary_category(title: str, entities: str = "") -> str:
     """대표 범주. RULES 가 가중치 내림차순이라 첫 매치가 가장 무거운 범주다.
 
