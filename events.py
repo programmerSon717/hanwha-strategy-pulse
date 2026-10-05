@@ -148,6 +148,11 @@ _GENERIC_TOKENS = {
     "은행", "보험", "증권", "업계", "시장", "추진", "검토", "확대", "강화",
     "방안", "대응", "논의", "회의", "개최", "예정", "전망", "계획", "관련",
     "따른", "위해", "대한", "오늘", "내일", "올해", "내년", "정부", "국내",
+    # 아래는 2026-10-05 추가. "확장" 하나로 "카카오뱅크 글로벌 영토
+    # 디지털자산으로 확장" 과 "카카오페이증권, 흑자 전환 이후 사업 확장"
+    # 이 같은 사건으로 묶였다 — 주체도 내용도 다른 기사다.
+    "확장", "본격화", "가시화", "전환", "개편", "점검", "부각", "대두",
+    "나서", "속도", "박차", "모색", "제고", "개선", "성장", "실적",
 }
 
 
@@ -168,11 +173,21 @@ def _distinctive_overlap(a: str, b: str, ents: frozenset = frozenset()) -> bool:
     인수 추진" — 겹치는 낱말이 회사 이름과 '인수' 뿐인데도 묶였다).
     """
     drop = set(_GENERIC_TOKENS) | _ACTION_TOKENS
+    names = set()
     for e in ents:
         drop |= _tokens(e)
-        drop.add(_norm(e))
-    ta = {t for t in _tokens(a) if t not in drop}
-    tb = {t for t in _tokens(b) if t not in drop}
+        names.add(_norm(e))
+    drop |= names
+
+    def _is_entity(t: str) -> bool:
+        # 엔티티는 정식명으로 환원돼 들어온다("카카오뱅크" → "카카오").
+        # 그래서 제목의 "카카오뱅크" 가 drop 에 걸리지 않고 변별력 있는
+        # 낱말로 남아, 카카오뱅크 기사 둘을 아무렇게나 이었다(2026-10-05).
+        # 엔티티 이름을 품은 낱말은 전부 엔티티 언급으로 본다.
+        return any(n and (n in t or t in n) for n in names)
+
+    ta = {t for t in _tokens(a) if t not in drop and not _is_entity(t)}
+    tb = {t for t in _tokens(b) if t not in drop and not _is_entity(t)}
     return bool(ta & tb)
 
 
