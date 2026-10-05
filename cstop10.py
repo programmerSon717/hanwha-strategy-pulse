@@ -1133,7 +1133,121 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
     return picked
 
 
-async def build_draft(store, asof: float, dry_run: bool = False) -> dict:
+# ── 초안을 토픽에 실제로 올린다 ────────────────────────────────
+# 발주자 지정(2026-10-05): "초안도 경전실 top10링크랑 경전실top10으로
+# 올려야지. 초안 갈아끼울 때마다 갈아끼우기 전 초안은 삭제 후 갈아끼운
+# 버전으로 올리는 방식으로."
+#
+# 그래서 초안도 실발행과 **같은 두 탭**에 올린다. 다만 머리말을 '초안'
+# 으로 달아 06:50 실발행과 구분한다. 더 나은 초안이 나오면 앞서 올린
+# 초안 메시지를 전부 지우고 새로 올린다. 06:50 실발행 직전에도 지운다 —
+# 초안과 실발행이 나란히 남으면 어느 것이 최종인지 알 수 없다.
+_DRAFT_MSG_KEY = "draft_msgs"
+
+
+def _draft_msg_ids(store, pub: str) -> list:
+    raw = store.get_setting(f"{_DRAFT_MSG_KEY}:{pub}") or ""
+    out = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            try:
+                t, m = part.split(":")
+                out.append((t, int(m)))
+            except ValueError:
+                continue
+    return out
+
+
+def _save_draft_msg_ids(store, pub: str, ids: list) -> None:
+    store.put_setting(f"{_DRAFT_MSG_KEY}:{pub}",
+                      ",".join(f"{t}:{m}" for t, m in ids))
+
+
+async def clear_draft_posts(client, store, pub: str) -> int:
+    """그 발행일의 초안 메시지를 **전부 지운다.** 지운 수를 돌려준다."""
+    import publisher
+    ids = _draft_msg_ids(store, pub)
+    gone = 0
+    for thread_name, mid in ids:
+        try:
+            if await publisher.delete_message(client, mid):
+                gone += 1
+        except Exception:                                   # noqa: BLE001
+            pass
+        await asyncio.sleep(0.25)
+    if ids:
+        _save_draft_msg_ids(store, pub, [])
+        print(f"[draft] 이전 초안 {gone}/{len(ids)}건 삭제")
+    return gone
+
+
+async def post_draft(client, store, pub: str, picked: list,
+                     asof: float) -> int:
+    """초안을 두 탭에 올린다. 앞서 올린 초안은 먼저 지운다."""
+    import publisher
+    await clear_draft_posts(client, store, pub)
+    if not picked:
+        return 0
+
+    _, until, label = window(asof)
+    d = datetime.fromtimestamp(asof, KST)
+    stamp = datetime.now(KST).strftime("%H:%M")
+    ids = []
+
+    thread = topics.thread_id_for("cs_top10")
+    if thread:
+        head = (f"📝 <b>{d.month}월 {d.day}일자 {settings.cs_top10_label} 초안</b>"
+                f" ({stamp} 기준 · {len(picked)}건)\n"
+                f"<i>확정본은 {settings.cs_top10_time} 에 올라갑니다. "
+                f"더 나은 기사가 들어오면 이 초안은 교체됩니다.</i>")
+        try:
+            mid = await publisher.send_raw(client, head, thread)
+            if mid:
+                ids.append(("cs_top10", mid))
+            await asyncio.sleep(0.5)
+        except Exception as exc:                            # noqa: BLE001
+            print(f"[draft] 머리말 실패 — {exc}")
+        msgs, preview_urls = render_all(picked, label, store)
+        for i, m in enumerate(msgs):
+            try:
+                mid = await publisher.send_raw(
+                    client, m, thread,
+                    preview_url=preview_urls[i] if i < len(preview_urls) else None)
+                if mid:
+                    ids.append(("cs_top10", mid))
+            except Exception as exc:                        # noqa: BLE001
+                print(f"[draft] 본문 {i + 1} 실패 — {exc}")
+            await asyncio.sleep(0.6)
+
+    links_thread = topics.thread_id_for("cs_top10_links")
+    if links_thread:
+        head = (f"📝 <b>{d.month}월 {d.day}일자 {settings.cs_links_label} 초안</b>"
+                f" ({stamp} 기준 · {len(picked)}건)")
+        try:
+            mid = await publisher.send_raw(client, head, links_thread)
+            if mid:
+                ids.append(("cs_top10_links", mid))
+            await asyncio.sleep(0.5)
+        except Exception as exc:                            # noqa: BLE001
+            print(f"[draft] 링크 머리말 실패 — {exc}")
+        for text, url in render_links(picked, label, store):
+            try:
+                mid = await publisher.send_raw(client, text, links_thread,
+                                               preview_url=url)
+                if mid:
+                    ids.append(("cs_top10_links", mid))
+            except Exception as exc:                        # noqa: BLE001
+                print(f"[draft] 링크 실패 — {exc}")
+            await asyncio.sleep(0.6)
+
+    _save_draft_msg_ids(store, pub, ids)
+    print(f"[draft] 초안 {len(ids)}건 게시 ({stamp})")
+    return len(ids)
+
+
+async def build_draft(store, asof: float, dry_run: bool = False,
+                      client=None) -> dict:
     """다음 발행분 초안을 만들고, **기존 초안보다 나을 때만** 갈아치운다.
 
     2026-10-05 사용자 지정: 전날 18:00·22:00·당일 04:00 에 세 번 만들고,
@@ -1157,6 +1271,12 @@ async def build_draft(store, asof: float, dry_run: bool = False) -> dict:
     print(f"[draft] {pub} 갱신 — {was} → {n}건 (적합도 평균 {avg:.1f})")
     for i, (_, r) in enumerate(picked, 1):
         print(f"   {i:>2}. {_posted_label(r)[:16]} {(r[K_HEAD] or '')[:44]}")
+    # **초안을 탭에 올린다.** 앞서 올린 초안은 post_draft 가 먼저 지운다.
+    if client is not None and not dry_run:
+        try:
+            await post_draft(client, store, pub, picked, asof)
+        except Exception as exc:                            # noqa: BLE001
+            print(f"[draft] 게시 실패 — {exc}")
     return {"replaced": True, "count": n, "quality": q}
 
 
@@ -1168,11 +1288,26 @@ def draft_due(store, now: float | None = None) -> tuple[bool, str]:
     """
     now = now or datetime.now(KST).timestamp()
     t = datetime.fromtimestamp(now, KST)
+
+    # 슬롯을 **분 단위로 정렬**해 두고 늦은 것부터 본다. 창은 '다음 슬롯까지'
+    # 와 1시간 중 **짧은 쪽**이다. 예전엔 무조건 1시간이라, 18:50 과 19:00
+    # 처럼 가까운 슬롯이 겹쳐 19:00 회차가 18:50 에 먹혔다(2026-10-05).
+    marks = []
     for hhmm in settings.cs_top10_draft_times:
         hh, _, mm = hhmm.partition(":")
-        mark = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        try:
+            marks.append((int(hh) * 60 + int(mm), hhmm))
+        except ValueError:
+            continue
+    marks.sort()
+    for i in range(len(marks) - 1, -1, -1):
+        minute, hhmm = marks[i]
+        nxt = marks[i + 1][0] if i + 1 < len(marks) else minute + 60
+        span = min(3600, max(60, (nxt - minute) * 60))
+        hh, mm = divmod(minute, 60)
+        mark = t.replace(hour=hh, minute=mm, second=0, microsecond=0)
         gap = (t - mark).total_seconds()
-        if 0 <= gap < 3600:
+        if 0 <= gap < span:
             # **그 회차를 이미 돌았으면 다시 돌지 않는다.** 상시 루프가 20분·
             # 긴급 레인이 5분마다 물어봐서, 한 시간 창에 최대 12번 재생성됐다.
             # 사용자가 말한 "총 3번"과 어긋나고 모델 호출만 낭비된다.
@@ -1367,6 +1502,14 @@ async def run(client, store, dry_run: bool | None = None,
             print("  · " + text.replace("\n", " / "))
         print("[cstop10] DRY_RUN — 발행하지 않았습니다")
         return None
+
+    # **초안을 먼저 지운다.** 초안과 확정본이 나란히 남으면 어느 것이
+    # 최종인지 알 수 없다(2026-10-05 발주자 지정).
+    try:
+        await clear_draft_posts(client, store,
+                                datetime.fromtimestamp(until, KST).strftime("%Y-%m-%d"))
+    except Exception as exc:                                # noqa: BLE001
+        print(f"[cstop10] 초안 정리 실패 — {exc}")
 
     thread = topics.thread_id_for("cs_top10")
     # 📌 A팀 Top10 도 링크용 탭처럼 머리말을 먼저 띄운다

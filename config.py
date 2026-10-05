@@ -127,7 +127,10 @@ class Settings:
     # 밤새 두 번 더 고칠 기회가 생긴다.
     cs_top10_draft_times: list = field(default_factory=lambda: [
         t.strip() for t in
-        os.getenv("CS_TOP10_DRAFT_TIMES", "16:00,18:00,22:00,04:00").split(",")
+        os.getenv("CS_TOP10_DRAFT_TIMES",
+                  # 2026-10-05 발주자 지정. 18:00 회차를 놓쳐 18:50 부터
+                  # 임시로 당겨 돌린다. 이후 19·20·22시, 다음날 04시.
+                  "18:50,19:00,20:00,22:00,04:00").split(",")
         if t.strip()
     ])
     # 10건이 안 차면 창을 **뒤로** 넓혀 가며 다시 뽑는다 (2026-10-05 사용자 지정).

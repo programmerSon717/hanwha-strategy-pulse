@@ -253,6 +253,25 @@ def _source_line(data: dict, url: str) -> str:
     return f"📎 출처: {e(label)}"
 
 
+async def delete_message(client: httpx.AsyncClient, message_id: int) -> bool:
+    """메시지 하나를 지운다. 성공 여부를 돌려준다.
+
+    텔레그램은 **48시간이 지난 메시지를 봇으로 지우지 못한다.** 초안은
+    길어야 15시간 전 것이라 이 제한에 걸리지 않는다. 이미 없는 메시지면
+    "message to delete not found" 가 오는데, 그것도 결과적으로는 '없음'
+    이므로 조용히 False 로 돌려준다.
+    """
+    try:
+        # API 상수는 .../sendMessage 까지 포함한다. 메서드만 바꿔 쓴다.
+        r = await client.post(
+            API.rsplit("/", 1)[0] + "/deleteMessage",
+            json={"chat_id": settings.telegram_channel_id,
+                  "message_id": int(message_id)})
+        return bool(r.json().get("ok"))
+    except Exception:                                       # noqa: BLE001
+        return False
+
+
 async def send_raw(client: httpx.AsyncClient, text: str, thread_id: int | None,
                    reply_to: int | None = None,
                    preview_url: str | None = None) -> int | None:
