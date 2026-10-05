@@ -161,12 +161,21 @@ class Settings:
     # **하루짜리 임시 추가 회차.** 오늘(10/5)은 18:00 회차를 놓쳐 저녁 내내
     # 시간마다 갈아끼우기로 했다(2026-10-05 발주자 지정). 날짜가 맞을 때만
     # 더해지고, 지나면 저절로 사라진다 — 상시 설정을 건드리지 않는다.
+    # **미리 시작한다.** 지정한 시각은 "그때 교체를 시작하라"가 아니라
+    # "그때는 이미 교체가 끝나 있어야 한다"는 뜻이다(2026-10-05 발주자 지정).
+    # 선정·본문 확보·telegra.ph 생성·13개 메시지 전송에 몇 분이 걸리므로
+    # 그만큼 앞당겨 시작한다.
+    cs_top10_draft_lead_min: int = int(
+        os.getenv("CS_TOP10_DRAFT_LEAD_MIN", "12"))
+
     cs_top10_draft_extra_date: str = os.getenv(
         "CS_TOP10_DRAFT_EXTRA_DATE", "2026-10-05")
     cs_top10_draft_extra_times: list = field(default_factory=lambda: [
         t.strip() for t in
         os.getenv("CS_TOP10_DRAFT_EXTRA_TIMES",
-                  "19:15,20:00,21:00,22:00,23:00").split(",")
+                  # 00:00 회차는 선행 12분 때문에 **전날 23:48** 에 시작한다.
+                  # 그래서 10/6 이 아니라 10/5 목록에 둔다.
+                  "19:15,20:00,21:00,22:00,23:00,00:00").split(",")
         if t.strip()
     ])
     # 그 다음날 새벽까지 이어지는 임시 회차.
@@ -175,7 +184,7 @@ class Settings:
     cs_top10_draft_extra_times2: list = field(default_factory=lambda: [
         t.strip() for t in
         os.getenv("CS_TOP10_DRAFT_EXTRA_TIMES2",
-                  "00:00,01:00,03:00,04:00").split(",")
+                  "01:00,03:00,04:00").split(",")
         if t.strip()
     ])
 

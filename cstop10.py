@@ -1404,11 +1404,15 @@ def draft_due(store, now: float | None = None) -> tuple[bool, str]:
     if today == getattr(settings, "cs_top10_draft_extra_date2", ""):
         slots += settings.cs_top10_draft_extra_times2
 
+    # **앞당겨 시작한다.** 지정한 시각은 "그때 교체를 시작하라"가 아니라
+    # "그때는 이미 교체가 끝나 있어야 한다"는 뜻이다(2026-10-05 발주자 지정).
+    lead = max(0, int(getattr(settings, "cs_top10_draft_lead_min", 0)))
     marks = []
     for hhmm in slots:
         hh, _, mm = hhmm.partition(":")
         try:
-            marks.append((int(hh) * 60 + int(mm), hhmm))
+            at = (int(hh) * 60 + int(mm) - lead) % (24 * 60)
+            marks.append((at, hhmm))
         except ValueError:
             continue
     marks.sort()
@@ -1428,7 +1432,8 @@ def draft_due(store, now: float | None = None) -> tuple[bool, str]:
                 return False, f"{hhmm} 회차는 이미 돌았다"
             if store is not None:
                 store.put_setting("draft_slot", slot)
-            return True, f"{hhmm} 초안 생성 시각"
+            return True, (f"{hhmm} 회차 — {lead}분 앞당겨 시작"
+                          if lead else f"{hhmm} 초안 생성 시각")
 
     # **자가복구.** 위 슬롯은 "시각을 지난 지 1시간 안" 에만 걸린다. 그 한 시간
     # 동안 루프가 죽어 있거나 cron 이 발화하지 않으면 그 회차는 영영 날아간다
