@@ -109,9 +109,9 @@ def render(data: dict, url: str) -> str:
     if note:
         parts += ["🔁 <b>새로 나온 사실</b>", e(note), ""]
 
-    # 본문 접근 실패로 확신이 낮은 건은 독자에게 알린다 (§31).
-    if data.get("_low_confidence"):
-        parts += ["⚠️ <i>본문 접근이 제한되어 제목·요약 범위에서만 정리했습니다.</i>", ""]
+    # (본문 접근 실패 건은 이제 **발행하지 않는다** — main.py 의 본문불가 관문.
+    #  예전엔 여기서 "⚠️ 본문 접근이 제한되어…" 꼬리말을 달아 내보냈는데,
+    #  내용을 보증 못 하는 글이라 금지됐다. 분기를 지워 되살아날 길을 막는다.)
 
     posted = data.get("_posted_label")
     if posted and not data.get("_headline_in_caption"):

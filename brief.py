@@ -1,6 +1,6 @@
 """☀️ Morning Brief (스펙 §23~25) — Strategy Pulse 에서 가장 중요한 산출물.
 
-    "아침 7시 전후, 경영전략실이 볼 기사 약 10개"
+    "아침 7시 전후, A팀이 볼 기사 약 10개"
 
 **최신 기사 10개가 아니다. Strategic Intelligence Ranking Top 10 이다.**
 
@@ -45,7 +45,7 @@ def cutoff_window(store, now: float | None = None) -> tuple[float, float, str]:
     return prev, now, label
 
 
-# ── 경영전략실 추천 서칭 순서 (2026-10-01 사용자 지정) ──────────
+# ── A팀 추천 서칭 순서 (2026-10-01 사용자 지정) ──────────
 # 브리프 Top10 은 점수만으로 뽑지 않는다. 아래 순서가 **1차 정렬키**이고
 # strategic_score 는 같은 티어 안에서의 2차 정렬키다.
 #

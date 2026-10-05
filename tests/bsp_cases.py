@@ -83,7 +83,7 @@ def test_entity_alias():
 def test_topic_routing():
     """§5·§7 — 토픽 키와 보정."""
     print("\n[§5] 토픽 11개")
-    # 2026-10-01: 📌 경전실 Top10 추가.
+    # 2026-10-01: 📌 A팀 Top10 추가.
     # 2026-10-05: 🔗 top10(링크용) 추가.
     # 둘 다 Primary 7개는 그대로다 — 집계 토픽이라 모델이 지정하지 않는다.
     check("토픽 수", len(topics.CATEGORIES), 11)
@@ -96,7 +96,7 @@ def test_topic_routing():
         ("competitors_bigtech", "🔎 경쟁사 · Big Tech"),
         ("digital_newbiz", "💡 디지털 · 신사업"), ("global_finance", "🌐 Global"),
         ("key_issues", "🚨 주요이슈"), ("daily_brief", "☀️ Morning Brief"),
-        ("cs_top10", "📌 경전실 Top10"),
+        ("cs_top10", "📌 A팀 Top10"),
     ]:
         check(f"{tid} 이름", topics.CATEGORIES[tid], name)
 
@@ -176,9 +176,9 @@ def test_cstop10():
     import cstop10 as _cs
     _cs._ORIG_FETCHABLE = getattr(_cs, "_ORIG_FETCHABLE", _cs._fetchable)
     _cs._fetchable = lambda group, store: max(group, key=lambda x: x[0])
-    """📌 경전실 Top10 — 적합도·홍보성 판정 (2026-10-01)."""
+    """📌 A팀 Top10 — 적합도·홍보성 판정 (2026-10-01)."""
     import csfit, cstop10, time
-    print("\n[Top10] 경전실 적합도")
+    print("\n[Top10] A팀 적합도")
 
     # 홍보성 판정. **여러 단어 패턴이 핵심 회귀 지점이다** — 예전에 re.X 가
     # 패턴 안 공백을 지워 "조기 지급"이 "조기지급"이 되는 바람에 전부 샜다.
@@ -531,7 +531,7 @@ def test_iv_paywall():
 
 
 def test_shared_and_ads():
-    """경전실 기공유 제외 · 광고성 문구 제거 (2026-10-02 사용자 지정)."""
+    """A팀 기공유 제외 · 광고성 문구 제거 (2026-10-02 사용자 지정)."""
     import shared, telegraph
     print("\n[Top10] 기공유 제외 · 광고 제거")
 
@@ -640,7 +640,7 @@ def test_top10_links():
     check("원문 주소 들어감", "https://ex.co/a" in msgs[0][0], True)
     check("미리보기 주소 = 원문", msgs[0][1], "https://ex.co/a")
     check("telegra.ph 를 쓰지 않음", "telegra.ph" in msgs[0][0], False)
-    # 본문·요약은 이쪽 역할이 아니다. 📌 경전실 Top10 과 겹치면 탭이 무의미해진다.
+    # 본문·요약은 이쪽 역할이 아니다. 📌 A팀 Top10 과 겹치면 탭이 무의미해진다.
     check("🐧 해설이 섞이지 않음", "🐧" in msgs[0][0], False)
     # 주소가 없는 행은 조용히 건너뛴다 — 빈 링크를 올리면 안 된다.
     check("주소 없으면 제외",
@@ -690,7 +690,7 @@ def test_paywall_gate_everywhere():
     # 영영 못 나간다. 반드시 앞이어야 한다.
     check("관문이 Event 등록보다 앞", 0 < gate < step5, True)
     # 2026-10-05: 막는 게 아니라 **같은 사건의 무료 기사로 갈아탄다.**
-    # 딜 전문지는 경전실이 실제로 공유하는 Source 라 통째로 막으면 안 된다.
+    # 딜 전문지는 A팀이 실제로 공유하는 Source 라 통째로 막으면 안 된다.
     check("무료 대체를 시도한다", "free_alternative" in src, True)
     check("대체 실패 시에만 건너뛴다", "유료·대체실패" in src, True)
 
@@ -816,7 +816,7 @@ def test_isolation():
           bool(crypto_token) and settings.telegram_bot_token == crypto_token, False)
     check("크립토 봇 그룹으로 발행하지 않음",
           bool(crypto_chat) and str(settings.telegram_channel_id) == crypto_chat, False)
-    check("프롬프트가 BSP", "경영전략실" in prompts_bsp.SYSTEM_PROMPT, True)
+    check("프롬프트가 BSP", "A팀" in prompts_bsp.SYSTEM_PROMPT, True)
     # 2026-10-02: key_points 가 추상적으로만 나와 구체 예시를 프롬프트에 박았다.
     # 예시가 빠지면 다시 "포트폴리오 다변화" 류로 돌아간다.
     P = prompts_bsp.SYSTEM_PROMPT

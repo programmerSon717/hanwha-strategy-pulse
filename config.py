@@ -1,6 +1,6 @@
 """Strategy Pulse 설정. 환경변수 기반(.env 또는 시스템 환경변수).
 
-한화생명 경영전략실(Business Strategy & Planning) 전용 Strategic Intelligence Agent.
+한화생명 A팀(Business Strategy & Planning) 전용 Strategic Intelligence Agent.
 CryptoNews Bot 의 검증된 엔진을 그대로 쓰고 뉴스 universe / taxonomy / threshold 만 교체했다.
 """
 import json
@@ -77,7 +77,7 @@ class Settings:
 
     # ── Morning Brief (§23) ──
     daily_brief_time: str = os.getenv("DAILY_BRIEF_TIME", "07:00")
-    # 📌 경전실 Top10 발행 시각. Morning Brief 보다 10분 앞선다.
+    # 📌 A팀 Top10 발행 시각. Morning Brief 보다 10분 앞선다.
     #
     # 06:55 → 06:50 (2026-10-05 사용자 지정). **이 값만 바꿔선 그 시각에 안 나간다.**
     # 실제 발행은 bot.yml 의 상시 루프가 --if-due 로 물어볼 때 일어나므로,
@@ -85,6 +85,25 @@ class Settings:
     # 다음 07:09 회차에 잡혀 07:10 에 나갔다(2026-10-03 실측).
     # 그래서 bot.yml 이 이 시각에 **정확히 깨어나도록** 함께 고쳤다.
     cs_top10_time: str = os.getenv("CS_TOP10_TIME", "06:50")
+    # 발행문에 찍히는 꼬리표. **기본값은 중립이고, 실제 표기는 환경변수로 넣는다.**
+    # 이 저장소는 공개돼 있어 조직 이름을 코드에 박으면 그대로 드러난다.
+    # 로컬은 .env(커밋 안 됨), Actions 는 Secret 으로 준다.
+    # 없어도 발행은 정상이다 — 꼬리표만 중립으로 나간다.
+    # 일반 탭 게시의 **발주 기준 하한**(csfit 적합도).
+    #
+    # 20 인 이유: 실측 144건에 대보면 20 미만은 csfit RULES 11개 범주 중
+    # **어느 하나도 안 걸리는** 14건과 정확히 일치한다(점수 17~18, 전부
+    # strategic_score×0.25 만으로 만들어진 값). 퇴직연금·은행 해킹보안처럼
+    # 발주 키워드에 근거가 없는 기사들이다.
+    #
+    # 30(FLOOR_MIN_SCORE)으로 올리면 28건이 더 잘리는데, 그중에는 메트라이프
+    # K-ICS 자본관리·하나금융 자사주 소각·최태원 지배력 방어처럼 **기준에 맞는**
+    # 기사가 섞여 있다. 그래서 Top10 의 최소배정 하한(30)과 일부러 다르게 둔다 —
+    # 일반 탭은 넓게 담고, Top10 에서 좁히는 구조다.
+    general_fit_threshold: int = int(os.getenv("GENERAL_FIT_THRESHOLD", "20"))
+
+    cs_top10_label: str = os.getenv("CS_TOP10_LABEL", "Top10")
+    cs_links_label: str = os.getenv("CS_LINKS_LABEL", "top10(링크용)")
     # Top10 을 뽑는 시간 창(시간). 평소에는 24 가 맞다 — '어제 아침부터 지금까지'.
     #
     # **봇이 며칠 멈췄다 살아났을 때는 넓혀야 한다.** 멈춘 동안 수집·발행이
@@ -93,6 +112,24 @@ class Settings:
     # 24h 창 16건 → 선정 4건 / 72h 창 57건). 그때만 CS_TOP10_WINDOW_HOURS=72 로
     # 한 번 돌리면 된다. 멈춘 기간의 뉴스는 팀에 공유된 적이 없으니 중복도 아니다.
     cs_top10_window_hours: int = int(os.getenv("CS_TOP10_WINDOW_HOURS", "24"))
+    # 창의 **끝** 시각. 발행(06:50)보다 50분 앞선다 (2026-10-05 사용자 지정:
+    # "전날 6:50am~당일 06:00am"). 그 50분은 기사를 고르고 Instant View 를
+    # 만드는 시간이다 — 발행 직전까지 들어오는 기사를 쫓으면 06:50 을 놓친다.
+    cs_top10_window_end: str = os.getenv("CS_TOP10_WINDOW_END", "06:00")
+
+    # 사전 생성 시각. 다음날 06:50 에 내보낼 것을 미리 만들어 둔다.
+    # 뒤에 만든 것이 더 기준에 맞으면 앞서 만든 것을 **대체**한다.
+    # 목적은 품질 향상과, 06:50 에 "이상하게 만들어지거나·전날자를 못 가져오거나
+    # ·10건이 안 되는" 사고를 미리 잡는 것이다(2026-10-05 사용자 지정).
+    # 16:00 추가 (2026-10-05 사용자 지정): "오후 4시도 추가해. 10월 6일
+    # 오전 6:50 꺼를 위해 10월 5일 오후 4시·6시·10시, 10월 6일 새벽 4시."
+    # 네 번 만들면 첫 초안이 발행 15시간 전에 서므로, 10건이 안 차는 사고를
+    # 밤새 두 번 더 고칠 기회가 생긴다.
+    cs_top10_draft_times: list = field(default_factory=lambda: [
+        t.strip() for t in
+        os.getenv("CS_TOP10_DRAFT_TIMES", "16:00,18:00,22:00,04:00").split(",")
+        if t.strip()
+    ])
     # 10건이 안 차면 창을 **뒤로** 넓혀 가며 다시 뽑는다 (2026-10-05 사용자 지정).
     #
     #   "월요일 06:50 에 나가야 하는 게 10건인데(일요일 기사 수집) 10건이 안 되면
@@ -107,7 +144,12 @@ class Settings:
     # 뿐이고, '무엇을 고를지'는 건드리지 않는다.
     # 모자라면 **하루씩 앞으로** 가며 부족분만 채운다. 창을 넓혀 다시 뽑지 않는다
     # (다시 뽑으면 범주 상한 경쟁이 달라져 오히려 줄었다 — cstop10.topup 주석).
-    cs_top10_fill_days: int = int(os.getenv("CS_TOP10_FILL_DAYS", "3"))
+    # 3 → 1 (2026-10-05 지적). 3일을 열어 두니 10/4 판에 10/1 기사가 실렸다.
+    #
+    # 사용자가 허용한 범위는 "월요일 분이 일요일 기사로 안 차면 **토요일**
+    # 저녁·오후 것" 즉 **바로 전날 하루**까지다. 그 이상 거슬러 가면 이미
+    # 팀이 며칠 전에 본 뉴스가 오늘 Top10 에 올라온다.
+    cs_top10_fill_days: int = int(os.getenv("CS_TOP10_FILL_DAYS", "1"))
     daily_brief_count: int = int(os.getenv("DAILY_BRIEF_COUNT", "10"))
     # 같은 회사/같은 사건이 브리프를 독식하지 않게 하는 상한 (§24-6)
     daily_brief_max_per_entity: int = int(os.getenv("DAILY_BRIEF_MAX_PER_ENTITY", "4"))
@@ -310,12 +352,12 @@ class Settings:
         ("한국계 해외진출", "한국 금융사 해외 진출 OR 현지법인 OR 인수 when:7d",
          "ko", "KR", "KR:ko", "글로벌"),
 
-        # ── 2026-10-01 경영전략실 키워드 기준 보강 ──────────────────
+        # ── 2026-10-01 A팀 키워드 기준 보강 ──────────────────
         # 기존 쿼리가 덮지 못하던 것만 추가한다. 중복 쿼리는 수집량만 늘린다.
         # site:n.news.naver.com 은 쓰지 마라. 구글뉴스가 네이버 미러에서 제목을
         # 추출하지 못해 전부 빈 제목(" - n.news.naver.com")으로 온다. 제목이 없으면
         # 사전필터도 모델도 판단할 수 없다. (2026-10-01 실측)
-        # 경전실이 실제 공유하는 롱테일 매체(뉴스핌·뉴스토마토·더구루·경제타임스…)는
+        # A팀이 실제 공유하는 롱테일 매체(뉴스핌·뉴스토마토·더구루·경제타임스…)는
         # **site: 를 걸지 않은 키워드 쿼리**가 훨씬 잘 잡는다. 아래가 그 쿼리다.
         ("생보 3사", '"한화생명" OR "삼성생명" OR "교보생명" when:2d',
          "ko", "KR", "KR:ko", "보험"),
@@ -336,7 +378,7 @@ class Settings:
     ])
 
     # 긴급 레인은 BSP 에서 쓰지 않는다. 크립토 봇의 경제지표 속보 레인이었고
-    # 경영전략실 브리핑과는 성격이 다르다. 엔진 코드가 참조하므로 빈 리스트로 둔다.
+    # A팀 브리핑과는 성격이 다르다. 엔진 코드가 참조하므로 빈 리스트로 둔다.
     urgent_sources: list = field(default_factory=list)
 
 

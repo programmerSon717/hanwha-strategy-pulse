@@ -1,9 +1,9 @@
 # Strategy Pulse — 여기부터 읽어라
 >
-> 텔레그램 봇: @HanwhaStrategyO_bot · 표시 이름 BOT_NAME=Strategy Pulse (2026-10-01 BSP Pulse 에서 변경)
-> 리포/디렉터리 이름(HanwhaBSPnews, BSP-news-bot)과 내부 키는 바꾸지 않았다.
+> 텔레그램 봇: @<봇 핸들 — .env 참조> · 표시 이름 BOT_NAME=Strategy Pulse (2026-10-01 BSP Pulse 에서 변경)
+> 리포/디렉터리 이름(<repo>, BSP-news-bot)과 내부 키는 바꾸지 않았다.
 
-> 한화생명 경영전략실(Business Strategy & Planning) 전용 Strategic Intelligence Agent.
+> A팀(Business Strategy & Planning) 전용 Strategic Intelligence Agent.
 > 최초 작성: 2026-09-23
 
 ---
@@ -16,7 +16,7 @@
 
 | 격리 장치 | 상태 |
 |---|---|
-| 디렉터리 | `~/Desktop/03_한화_업무/HanwhaBSPnews/` — 크립토는 `HanwhaDAPnews/` |
+| 디렉터리 | `<작업 디렉터리>/` — 크립토는 `<repo-crypto>/` |
 | git remote | **없음.** 크립토 리포로 push 가 물리적으로 불가능하다 |
 | 코드 공유 | 없음. import·심볼릭링크 없이 완전 독립 사본 |
 | DB | 자체 `botstate.sqlite3` |
@@ -31,7 +31,7 @@
 
 답해야 하는 질문은 하나다.
 
-> "한화생명 경영전략실 구성원이 오늘 아침 반드시 알아야 할 변화는 무엇인가?"
+> "A팀 구성원이 오늘 아침 반드시 알아야 할 변화는 무엇인가?"
 
 키워드 매칭 봇이 아니다. 키워드는 **후보 확보용**일 뿐이고, 실을지 말지는
 모델이 전략 관련성으로 판단한다.
@@ -46,7 +46,8 @@
 
 | 탭 | 내부 키 | 성격 |
 |---|---|---|
-| 🏢 한화그룹 | `hanwha_group` | 가장 중요. 기사의 **실질적 핵심**이 한화일 때만 |
+| 🏢 주시 그룹 | `hanwha_group` | 가장 중요. 기사의 **실질적 핵심**이 그 그룹일 때만 |
+  (토픽 키는 내부 식별자다. 바꾸면 DB 의 primary_topic 과 어긋나므로 두었다.)
 | 🤝 M&A · 지배구조 | `ma_governance` | 거래·소유권·경영권 변화 |
 | 🏦 보험 · 금융 | `insurance_finance` | 산업구조·자본·채널·투자 |
 | ⚖️ 규제 · 정책 | `regulation_policy` | 당국 결정이 사건의 **원인**일 때 |
@@ -136,7 +137,7 @@ tg_session.session.crypto-inherited.DANGEROUS  개인 텔레그램 계정 세션
 ### ④ Ground Truth 파일
 
 스펙이 지정한 `붙여넣은 텍스트(1).txt` 가 디스크에 없다. 이 파일에는
-경영전략실이 실제로 공유한 과거 기사(Positive Sample)가 들어 있고,
+A팀이 실제로 공유한 과거 기사(Positive Sample)가 들어 있고,
 **§37 Historical Backtest 는 이것 없이는 할 수 없다.**
 
 파일을 받으면 다음을 한다.
@@ -150,7 +151,7 @@ tg_session.session.crypto-inherited.DANGEROUS  개인 텔레그램 계정 세션
 ## 6. 실행 방법
 
 ```bash
-cd ~/Desktop/03_한화_업무/HanwhaBSPnews/BSP-news-bot
+cd <작업 디렉터리>
 
 # 회귀 검사 (모델 호출 없음. 배포 전 반드시)
 venv/bin/python tests/bsp_cases.py

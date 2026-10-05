@@ -102,7 +102,7 @@ class Store:
                 ("main_entities", "TEXT"),      # 쉼표 구분(정식명)
                 ("content_hash", "TEXT"),
                 ("daily_brief_date", "TEXT"),   # 브리프에 실린 날짜(YYYY-MM-DD)
-                ("cs_top10_date", "TEXT"),      # 📌 경전실 Top10 에 실린 날짜
+                ("cs_top10_date", "TEXT"),      # 📌 A팀 Top10 에 실린 날짜
                 ("why_it_matters", "TEXT"),
                 ("confidence", "REAL"),
             ):
@@ -450,7 +450,7 @@ class Store:
 
     def cstop10_candidates(self, since_ts: float, until_ts: float,
                            min_score: int, by_origin: bool = False) -> list:
-        """📌 경전실 Top10 후보.
+        """📌 A팀 Top10 후보.
 
         brief_candidates 와 다른 점: **이미 Top10 에 실린 기사를 뺀다.**
         Morning Brief 의 daily_brief_date 와는 별개 컬럼이다 — 두 탭은 선정
@@ -520,10 +520,16 @@ class Store:
             rows = c.execute(
                 "SELECT cs_top10_date, source_url, canonical_url FROM published"
                 " WHERE cs_top10_date LIKE '____-__-__'").fetchall()
+        # **풀린 주소까지 본다.** 봇은 구글뉴스 리디렉터를 저장하므로 두 컬럼만
+        # 보면 기사번호를 못 뽑는다 — Top10 39건 중 27건(69%)이 그랬고, 그래서
+        # 같은 기사가 다른 날 Top10 에 다시 실렸다(2026-10-05 감사).
+        with self._conn() as c:
+            resolved = {a: b for a, b in
+                        c.execute("SELECT src, dst FROM resolved_url")}
         for d, su, cu in rows:
             if exclude_date and d == exclude_date:
                 continue
-            for u in (su, cu):
+            for u in (su, cu, resolved.get(su), resolved.get(cu)):
                 if not u:
                     continue
                 m = pat.search(u)
@@ -535,6 +541,61 @@ class Store:
                 if num and "google" not in host:
                     out.add(f"{host}#{num}")
         return out
+
+    def save_top10_draft(self, publish_date: str, keys: list,
+                         quality: float, built_at: float):
+        """다음 발행분 **초안**을 저장한다. 같은 날짜는 덮어쓴다.
+
+        왜 초안을 미리 만드나(2026-10-05 사용자 지정): 06:50 에 즉석에서 뽑으면
+        "이상하게 만들어지거나·전날자를 못 가져오거나·10건이 안 되는" 사고를
+        그 자리에서 알 수 없다. 전날 18:00·22:00·당일 04:00 에 미리 만들어 두고,
+        **뒤에 만든 것이 더 좋으면 갈아치운다.** 06:50 은 확정된 초안을 내보내기만
+        한다. 품질도 올라가고, 사고가 나도 06:50 전에 드러난다.
+        """
+        with self._conn() as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS top10_draft (
+                             publish_date TEXT PRIMARY KEY,
+                             keys TEXT, quality REAL, built_at REAL)""")
+            c.execute("INSERT OR REPLACE INTO top10_draft"
+                      " (publish_date, keys, quality, built_at) VALUES (?,?,?,?)",
+                      (publish_date, ",".join(keys), quality, built_at))
+
+    def get_top10_draft(self, publish_date: str):
+        """(keys, quality, built_at) 또는 None."""
+        with self._conn() as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS top10_draft (
+                             publish_date TEXT PRIMARY KEY,
+                             keys TEXT, quality REAL, built_at REAL)""")
+            row = c.execute("SELECT keys, quality, built_at FROM top10_draft"
+                            " WHERE publish_date=?", (publish_date,)).fetchone()
+        if not row:
+            return None
+        return ([k for k in (row[0] or "").split(",") if k], row[1], row[2])
+
+    def rows_by_keys(self, keys: list) -> list:
+        """키 목록을 cstop10_candidates 와 **같은 컬럼 순서**로 되돌린다.
+
+        초안은 키만 저장한다. 본문·요약은 published 에 이미 있으므로 발행
+        시점에 다시 읽는다 — 초안에 본문을 복사해 두면 그 사이 갱신된 내용을
+        놓친다.
+        """
+        if not keys:
+            return []
+        q = ",".join("?" * len(keys))
+        with self._conn() as c:
+            # **후보 쿼리와 같은 관문을 건다.** 예전엔 키만 보고 그대로 꺼내서,
+            # 초안을 만든 뒤 그 기사가 다른 경로로 이미 Top10 에 실려도 06:50 에
+            # 또 나갔다. 본문 못 읽는 기사도 그대로 통과했다(2026-10-05 감사).
+            rows = c.execute(
+                "SELECT key, headline, source_url, primary_topic, secondary_topics,"
+                "       strategic_score, is_key_issue, event_cluster_id, main_entities,"
+                "       lede, why_it_matters, sent_at, event_type, origin_at, text"
+                f"  FROM published WHERE key IN ({q})"
+                "   AND (cs_top10_date IS NULL OR cs_top10_date='')"
+                "   AND (confidence IS NULL OR confidence >= 0.5)",
+                keys).fetchall()
+        order = {k: i for i, k in enumerate(keys)}
+        return sorted(rows, key=lambda r: order.get(r[0], 999))
 
     def mark_cstop10(self, keys: list, date_str: str):
         with self._conn() as c:
@@ -628,7 +689,7 @@ class Store:
     def record_agg_message(self, scope: str, ts: float, message_id: int | None):
         """집계 탭(🚨·☀️·📌) 발행분의 message_id 를 남긴다.
 
-        **왜 남기나.** 2026-10-01 에 📌 경전실 Top10 테스트 발행을 지우려다
+        **왜 남기나.** 2026-10-01 에 📌 A팀 Top10 테스트 발행을 지우려다
         message_id 가 없어 탭을 통째로 삭제·재생성해야 했다. thread_id 가 바뀌어
         .env·topics.json·GitHub Secret 을 전부 고쳐야 했다. 기록해 두면
         해당 메시지만 지우면 된다.
@@ -654,9 +715,9 @@ class Store:
                       (f"msg:{scope}", message_id))
 
     def last_pr_pick(self) -> float | None:
-        """📌 경전실 Top10 에 홍보성 기사를 마지막으로 실은 시각. 없으면 None.
+        """📌 A팀 Top10 에 홍보성 기사를 마지막으로 실은 시각. 없으면 None.
 
-        경전실은 한화 홍보성 기사도 공유하지만 매일은 아니다. 이틀에 한 건,
+        A팀은 한화 홍보성 기사도 공유하지만 매일은 아니다. 이틀에 한 건,
         그중 가장 큰 것만 싣는다(2026-10-01 사용자 지정).
         """
         with self._conn() as c:

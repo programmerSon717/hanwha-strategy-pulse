@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""📌 경전실 Top10 발행분 삭제 유틸.
+"""📌 A팀 Top10 발행분 삭제 유틸.
 
 예전엔 message_id 를 남기지 않아 탭을 통째로 지워야 했다(2026-10-01).
 이제는 발행할 때 store.record_agg_message 로 남기므로 해당 메시지만 지운다.

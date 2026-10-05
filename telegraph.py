@@ -143,8 +143,18 @@ def _key(s: str) -> str:
 
 
 def is_paywalled(url: str) -> bool:
-    """유료회원 전용 매체인가. 네트워크를 타지 않고 도메인만 본다."""
-    return any(d in (url or "") for d in PAYWALL_DOMAINS)
+    """유료회원 전용 매체인가. 네트워크를 타지 않고 도메인만 본다.
+
+    **주소를 못 푼 구글뉴스 링크는 '모른다' 가 아니라 '유료일 수 있다' 로 본다.**
+    gnews.resolve 는 해석에 실패하면 받은 주소를 그대로 돌려주는데, 그러면
+    도메인이 news.google.com 이라 유료 판정이 조용히 빠진다. 실제로 유료
+    매체 7건이 그렇게 발행됐다(2026-10-05 감사). 여기서 True 를 주면 호출부가
+    무료 대체를 찾고, 못 찾으면 거르므로 안전한 쪽으로 기운다.
+    """
+    u = url or ""
+    if "news.google.com" in u:
+        return True
+    return any(d in u for d in PAYWALL_DOMAINS)
 
 
 def fetch_article(url: str, timeout: float = 15,
@@ -286,7 +296,7 @@ def build_content(summary: str, bullets: list[str], why: str,
         {"tag": "a", "attrs": {"href": source_url}, "children": [label]}]})
 
     if why:
-        c.append({"tag": "h4", "children": ["경영전략실 시사점"]})
+        c.append({"tag": "h4", "children": ["A팀 시사점"]})
         c.append({"tag": "blockquote", "children": [why]})
     return c
 

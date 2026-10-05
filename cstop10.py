@@ -1,8 +1,8 @@
-"""📌 경전실 Top10 — 매일 KST 06:55.
+"""📌 A팀 Top10 — 매일 KST 06:55.
 
 ☀️ Morning Brief(07:00)와 **선정 기준이 다르다.**
   Morning Brief : 모델이 매긴 strategic_score 순 + 추천 서칭 순서 티어
-  경전실 Top10  : csfit.score() — 경전실이 실제 공유한 125건의 주제 분포 가중치
+  A팀 Top10  : csfit.score() — A팀이 실제 공유한 125건의 주제 분포 가중치
 
 같은 기사가 양쪽에 다 나올 수 있다. 둘 다 Aggregation Topic 이라 중복 허용이다.
 """
@@ -64,9 +64,21 @@ def window(now: float | None = None) -> tuple[float, float, str]:
     config.cs_top10_window_hours 주석에 있다.
     """
     now = now or datetime.now(KST).timestamp()
-    until = now
-    since = now - settings.cs_top10_window_hours * 3600
-    label = datetime.fromtimestamp(now, KST).strftime("%Y.%m.%d %a")
+    t = datetime.fromtimestamp(now, KST)
+    # 창의 끝은 **그날 06:00** 이다(settings.cs_top10_window_end). 발행 시각이
+    # 아니라 그보다 50분 앞선다 — 사용자 지정 "전날 6:50am~당일 06:00am".
+    hh, _, mm = settings.cs_top10_window_end.partition(":")
+    end = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    if end > t:                      # 아직 그 시각 전이면 전날 창이다
+        end -= timedelta(days=1)
+    until = end.timestamp()
+    # 시작은 '전날 06:50'. 끝이 06:00 이므로 길이는 24시간이 아니라 23시간 10분이다.
+    # (24시간을 그대로 빼면 전날 06:00 이 되어 06:00~06:50 구간이 두 번 실린다 —
+    #  전날 판의 끝과 겹친다.)
+    hh2, _, mm2 = settings.cs_top10_time.partition(":")
+    start = (end - timedelta(days=1)).replace(hour=int(hh2), minute=int(mm2))
+    since = start.timestamp()
+    label = t.strftime("%Y.%m.%d %a")
     return since, until, label
 
 
@@ -98,6 +110,28 @@ def _stem_hits(ta: set, tb: set, minlen: int = 2, prefix: int = 3) -> int:
 
 def _stem_overlap(ta: set, tb: set, minlen: int = 2) -> bool:
     return _stem_hits(ta, tb, minlen) > 0
+
+
+# 기사 제목에 흔한 말들. 이게 겹치는 건 같은 사건이라는 증거가 못 된다.
+# 반대로 이 목록 **밖**의 긴 낱말(스테이블코인·애큐온·포르테그라·타임월드…)이
+# 겹치면 같은 사건일 가능성이 매우 높다.
+_GENERIC_WORDS = {
+    "금융", "사업", "전략", "시장", "추진", "확대", "강화", "검토", "논의",
+    "도입", "관리", "서비스", "투자", "경쟁", "규제", "실적", "계획", "발표",
+    "지원", "협력", "체계", "구조", "방안", "대응", "개선", "성장", "진출",
+    "가능성", "본격화", "가시화", "전환", "부문", "기업", "국내", "해외",
+    "보험", "증권", "은행", "그룹", "계열사", "업계", "당국", "정부",
+    # 2026-10-05 감사: 아래가 "희귀 낱말"로 통과해 서로 다른 기사를 묶었다.
+    "금융위", "금감원", "공정위", "증권사", "보험사", "과징금", "디지털자산",
+    "포트폴리오", "에이전트", "개인정보", "정보유출", "하나은행", "신한은행",
+    "국민은행", "우리은행", "카카오뱅크", "토스뱅크", "케이뱅크",
+}
+
+
+def _distinctive(words: set) -> set:
+    """흔한 말을 뺀, 그 사건을 특정하는 낱말들."""
+    return {w for w in words
+            if len(w) >= 3 and w not in _GENERIC_WORDS and not w.isdigit()}
 
 
 def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
@@ -146,8 +180,46 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
     # 전부 빼면 "애큐온캐피탈" 과 "애큐온저축은행" 같은 **서로 다른** 회사명이
     # 사라져 어간 비교 기회를 잃는다. 같은 딜의 두 기사가 그렇게 갈렸다.
     names = {events._norm(x) for x in inter}
+
+    # **교집합 회사명으로 시작하는 낱말까지 뺀다.**
+    # 엔티티가 '카카오' 로 정규화되면 제목의 '카카오뱅크' 는 names 와 글자가
+    # 달라 안 지워졌다. 그래서 같은 회사 이름이 어간 겹침(+1)과 희귀 낱말(+1)로
+    # 두 번 계산돼, 서로 다른 카카오뱅크 기사 두 건이 같은 사건으로 묶였다
+    # (2026-10-05). 회사명은 이미 엔티티 신호로 세었으니 여기서 또 세면 안 된다.
+    #
+    # '애큐온캐피탈' vs '애큐온저축은행' 은 여전히 남는다 — 그때 교집합은
+    # '한화생명' 이고 애큐온* 은 거기서 시작하지 않는다.
+    def _strip(toks):
+        # **별칭까지 지운다.** 교집합이 '하나금융' 으로 정규화되면 제목의
+        # '하나은행' 은 접두사가 달라 안 지워졌고, 회사명 하나로 어간겹침과
+        # 희귀낱말을 두 번 받아 서로 다른 하나은행 기사가 묶였다(2026-10-05).
+        alias = set(names)
+        for n in list(names):
+            alias.add(n.replace("금융", "은행"))
+            alias.add(n.replace("금융", ""))
+        alias = {a for a in alias if len(a) >= 2}
+        return {w for w in toks
+                if not any(w.startswith(a) for a in alias)}
+
+    # 어간 겹침에는 회사명을 **남긴다**(기존 동작). '애큐온캐피탈' 과
+    # '애큐온저축은행' 처럼 회사명 자체가 같은 딜을 가리키는 경우가 있고,
+    # 틀렸을 때의 대가가 비대칭이라 묶는 쪽으로 기운다 — 잘못 묶으면 기사
+    # 하나가 빠질 뿐이고, 못 묶으면 같은 뉴스가 3~4건 실린다.
     hits = _stem_hits(ta - names, tb - names)
     score += 2 if hits >= 2 else (1 if hits else 0)
+
+    # **희귀하고 구체적인 낱말이 겹치면 그것만으로 강한 증거다.**
+    # 교보생명 스테이블코인 건이 아주경제·신아일보 두 기사로 Top10 에 나란히
+    # 실렸다(2026-10-05). 엔티티 1점 + 공통낱말 1점 = 2점으로 문턱(3)에 못
+    # 미쳤는데, 겹친 낱말이 하필 '스테이블코인' 이었다. 모델이 사건 종류를
+    # 서로 다르게(other / partnership) 적어 그 신호도 못 받았다.
+    #
+    # 흔한 말(금융·추진·강화…)은 _GENERIC_WORDS 로 빼므로 과잉 병합은 없다.
+    # 희귀 낱말 가산점에서는 회사명을 뺀다 — 그건 이미 엔티티 신호로 세었다.
+    # 안 빼면 '카카오뱅크' 하나로 어간 겹침과 희귀 낱말을 **두 번** 받아,
+    # 서로 다른 카카오뱅크 기사가 같은 사건으로 묶인다(2026-10-05).
+    if _distinctive(_strip(ta) & _strip(tb)):
+        score += 1
 
     if strict:
         # **과거 14일치 전체와 비교할 때 쓰는 엄격 모드.**
@@ -180,6 +252,12 @@ def _same(a_title, a_ents, a_type, b_title, b_ents, b_type,
 TIER_BONUS = {1: 25, 2: 15, 3: 10, 4: 5, 5: 0}
 
 
+# 한화 **금융**계열사. 발주 수칙의 4순위다 — 1순위(한화그룹 전반)와 가른다.
+_HANWHA_FIN_RE = re.compile(
+    r"한화생명|한화손해보험|한화손보|한화투자증권|한화증권|한화자산운용"
+    r"|한화저축은행|한화금융|한화생명금융서비스|캐롯손해보험|캐롯손보|피플라이프")
+
+
 def tier_of(r) -> int:
     """추천 서칭 순서상의 티어. **한화 여부는 제목으로 판단한다.**
 
@@ -198,16 +276,29 @@ def tier_of(r) -> int:
     etype = r[K_ETYPE] if len(r) > K_ETYPE else ""
     pri = r[K_PRI] or ""
 
+    group = events.ACTION_GROUPS.get(etype or "other", "other")
+
+    # 1순위 — 기사의 핵심이 한화. **금융계열사도 여기다.**
+    # (한때 금융계열사를 4순위로 내려 봤는데, 한화생명이 2·4순위로 흩어져
+    #  오히려 나빠졌다. 발주 4순위는 "한화가 곁다리로만 언급된 것" 을 뜻한다.)
     if csfit.primary_category(title) == "한화":
         return 1
-    if pri == "ma_governance" or etype in events.ACTION_GROUPS and \
-            events.ACTION_GROUPS.get(etype) == "deal":
+    # 2순위 — 진행중인 M&A · 보험
+    if pri == "ma_governance" or group == "deal":
         return 2
     if pri == "insurance_finance":
         return 2
-    if pri == "regulation_policy":
+    # 3순위 — 규제 · 지배구조
+    #
+    # **primary_topic 만 보면 안 된다.** 2순위는 event_type 도 보는데 여기만
+    # 안 봐서, "금융위, 토스뱅크 반값 엔화 적법성 검토" 같은 명백한 규제
+    # 기사가 5순위로 추락했다(2026-10-05 감사, 실측 6건).
+    # "지배구조" 는 발주 수칙 3번에 적혀 있는데 분기 자체가 없었다.
+    if pri == "regulation_policy" or group in ("regulation", "governance"):
         return 3
-    if "한화" in ents:
+    # 4순위 — 한화가 **곁다리로만** 언급된 기사. 제목에는 없고 entities 에만
+    # 있는 경우다. 1순위가 제목으로 먼저 가져가므로 여기 남는 건 그것뿐이다.
+    if "한화" in ents or _HANWHA_FIN_RE.search(ents):
         return 4
     return 5
 
@@ -216,7 +307,7 @@ def _acceptable(r, picked: list) -> bool:
     """대체까지 끝난 기사를 최종적으로 받아들일 수 있는가.
 
     **대체 뒤에 다시 봐야 한다.** 유료기사를 같은 사건의 다른 매체 기사로
-    갈아타고 나면 그 기사가 이미 뽑힌 것과 같은 사건일 수도, 경전실이 이미
+    갈아타고 나면 그 기사가 이미 뽑힌 것과 같은 사건일 수도, A팀이 이미
     공유한 것일 수도 있다. 갈아타기 전에만 검사해서 한화투자증권 종투사 건이
     두 번 실렸다(2026-10-02).
     """
@@ -355,15 +446,15 @@ def select(rows: list, count: int | None = None, store=None,
                     keep.append((sc, r))
             merged = keep
 
-    # 경영전략실이 이미 공유한 건은 뺀다.
-    # 과장님들이 아침에 올린 것을 봇이 또 올리면 중복이다. 비교는 제목 기준이다 —
+    # A팀이 이미 공유한 건은 뺀다.
+    # 담당자들이 아침에 올린 것을 봇이 또 올리면 중복이다. 비교는 제목 기준이다 —
     # 같은 사건을 다른 매체가 쓰면 URL 이 전혀 다르다(2026-10-02 사용자 지정).
     before = len(merged)
     kept = []
     for sc, r in merged:
         hit = shared.already_shared(r[K_HEAD] or "")
         if hit:
-            print(f"[cstop10] 경전실 기공유 제외: {(r[K_HEAD] or '')[:34]}")
+            print(f"[cstop10] A팀 기공유 제외: {(r[K_HEAD] or '')[:34]}")
         else:
             kept.append((sc, r))
     merged = kept
@@ -378,7 +469,7 @@ def select(rows: list, count: int | None = None, store=None,
     # **1차 정렬키는 사용자가 지정한 추천 서칭 순서다.**
     #   1 한화  2 M&A·보험  3 규제·지배구조  4 한화 곁다리  5 기타
     # 125건 실측 가중치(csfit)는 **같은 티어 안에서의** 2차 정렬키다.
-    # 기준의 위계가 그렇다 — 추천 순서가 틀이고, 125건은 그 안에서 과장님들이
+    # 기준의 위계가 그렇다 — 추천 순서가 틀이고, 125건은 그 안에서 담당자들이
     # 실제로 무엇을 골랐는지 보여주는 성향이다(2026-10-02 사용자 설명).
     def rank_key(x):
         return -(x[0] + TIER_BONUS.get(tier_of(x[1]), 0))
@@ -404,14 +495,22 @@ def select(rows: list, count: int | None = None, store=None,
     cat_used: dict[str, int] = {}
     picked, deferred = [], []
 
-    # 최소 보장석을 **먼저** 채운다. 점수 경쟁에 맡기면 영영 못 들어온다.
+    # 범주별 최소 1자리을 **먼저** 채운다. 점수 경쟁에 맡기면 영영 못 들어온다.
     reserved_keys = set()
     for catg, floor in csfit.CATEGORY_FLOOR.items():
         got = 0
-        for sc, r in normal:
+        # 그 범주에서 **점수가 높은 순**으로 본다. 최소배정은 한 자리뿐이라
+        # 아무거나가 아니라 그 범주 최고점이 들어가야 한다.
+        _cands = sorted(
+            (x for x in normal
+             if csfit.primary_category(x[1][K_HEAD] or "") == catg),
+            key=lambda x: -x[0])
+        for sc, r in _cands:
             if got >= floor:
                 break
-            if sc < csfit.FLOOR_MIN_SCORE:
+            # 느슨한 하한을 쓴다 — 자리를 비워 두느니 그 범주 최고점을 넣는다.
+            # csfit.FLOOR_RELAXED_MIN 주석 참고.
+            if sc < csfit.FLOOR_RELAXED_MIN:
                 continue
             if csfit.primary_category(r[K_HEAD] or "") != catg:
                 continue
@@ -432,7 +531,7 @@ def select(rows: list, count: int | None = None, store=None,
             h = ents[0] if ents else (r[K_PRI] or "_")
             used[h] = used.get(h, 0) + 1
             got += 1
-            print(f"[cstop10] {catg} 보장석: {(r[K_HEAD] or '')[:40]}")
+            print(f"[cstop10] {catg} 최소배정: {(r[K_HEAD] or '')[:40]}")
 
     for sc, r in pr_pick + normal:
         if r[K_KEY] in reserved_keys:
@@ -449,7 +548,7 @@ def select(rows: list, count: int | None = None, store=None,
             deferred.append((sc, r))
             continue
         # **최종 안전장치 — 이미 뽑은 것과 같은 사건이면 넣지 않는다.**
-        # 앞 단계에서 접었더라도 보장석·deferred 경로로 들어올 수 있다.
+        # 앞 단계에서 접었더라도 최소배정·deferred 경로로 들어올 수 있다.
         # 10건은 서로 다른 사건이어야 한다(2026-10-02 사용자 지정).
         if any(_same(r[K_HEAD] or "", r[K_ENT] or "",
                      r[K_ETYPE] if len(r) > K_ETYPE else "",
@@ -705,7 +804,7 @@ def render_item(r, url: str | None = None, iv: str | None = None,
 def render_links(picked: list, label: str, _store=None) -> list[tuple[str, str]]:
     """🔗 top10(링크용) 탭에 나갈 [(본문, 미리보기주소)] — **기사 1건당 1메시지**.
 
-    2026-10-05 사용자 지정. 📌 경전실 Top10 과 번호가 1:1로 맞고, 그 번호로
+    2026-10-05 사용자 지정. 📌 A팀 Top10 과 번호가 1:1로 맞고, 그 번호로
     본문 쪽 해설을 찾아갈 수 있어야 한다. 그래서 번호·제목·원문 주소만 넣는다.
 
     **한 메시지에 몰아 담지 않는다.** 텔레그램은 메시지당 미리보기 카드를
@@ -714,7 +813,7 @@ def render_links(picked: list, label: str, _store=None) -> list[tuple[str, str]]
 
     주소는 **원문 기사**다 — 인스턴트뷰(telegra.ph)가 아니다. 이 탭은 복사해서
     메일·보고서에 붙이는 용도라 telegra.ph 중계 주소는 쓸모가 없다.
-    인스턴트뷰로 읽는 건 📌 경전실 Top10 쪽 제목 링크가 한다.
+    인스턴트뷰로 읽는 건 📌 A팀 Top10 쪽 제목 링크가 한다.
     """
     e = html.escape
     out = []
@@ -750,7 +849,8 @@ def render_all(picked: list, label: str, _store=None) -> tuple[list[str], list[s
     """
     e = html.escape
     n_pr = sum(1 for _, r in picked if csfit.is_pr(r[K_HEAD] or ""))
-    head = f"📌 <b>{e(settings.bot_name)} | 경전실 Top10</b>\n{e(label)}"
+    head = (f"📌 <b>{e(settings.bot_name)} | {e(settings.cs_top10_label)}</b>"
+            f"\n{e(label)}")
     if n_pr:
         head += f"  ·  홍보 {n_pr}건 포함"
 
@@ -788,8 +888,13 @@ def render_all(picked: list, label: str, _store=None) -> tuple[list[str], list[s
     return base, []
 
 
-_ART_ID = re.compile(r"idxno=(\d+)|newsId=(\w+)|/v/(\d+)|ncode=(\w+)"
-                     r"|AKR(\d+)|articles/(\d+)|key=(\w+)")
+# 한국 매체가 쓰는 기사번호 자리들. **빠진 패턴이 많아 Top10 의 69%가 키를
+# 못 뽑았고, 그래서 같은 기사가 다른 날 Top10 에 다시 실렸다**(2026-10-05 감사).
+_ART_ID = re.compile(
+    r"idxno=(\d+)|newsId=(\w+)|ncode=(\w+)|ar_id=(\d+)|\bno=(\d+)"
+    r"|AKR(\d+)|key=(\w+)"
+    r"|/v/(\d+)|articles?/(\d+)|/page/view/(\d+)|/news/view/(\d+)"
+    r"|/article/(\d+)|/amp/(\d+)|/view\.php\?ud=(\w+)")
 
 
 def article_key(url: str) -> str:
@@ -820,10 +925,10 @@ def topup(picked: list, rows: list, store, now: float, want: int,
     Top10 에 들어갈 만한 걸로 부족한 걸 채워 넣어."
 
     **창을 넓혀 다시 뽑는 것과 다르다.** 다시 뽑으면 후보가 늘면서 범주 상한·
-    보장석 경쟁이 달라져 오히려 줄어든다(실측: 24h 9건 → 60h 6건). 여기서는
+    최소배정 경쟁이 달라져 오히려 줄어든다(실측: 24h 9건 → 60h 6건). 여기서는
     오늘 뽑은 것을 그대로 두고 **모자란 수만큼만** 앞날에서 더한다.
 
-    기준은 그대로다 — 같은 사건 금지, 경전실 기공유 제외, 범주·엔티티 상한,
+    기준은 그대로다 — 같은 사건 금지, A팀 기공유 제외, 범주·엔티티 상한,
     유료 교체, 본문 확보 검사를 전부 통과한 것만 더한다.
     """
     if len(picked) >= want:
@@ -911,6 +1016,168 @@ def topup(picked: list, rows: list, store, now: float, want: int,
     return picked
 
 
+def origin_floor_day(since: float) -> str:
+    """후보로 받아줄 **기사 발행일의 하한**(YYYY-MM-DD).
+
+    창은 sent_at(봇이 내보낸 시각)으로 자른다 — 봇이 처리한 것만 후보가 되므로
+    운영상 그래야 한다. 그런데 그러면 **며칠 전 기사**가 어제 수집됐다는
+    이유로 오늘 판에 들어온다. 실측(2026-10-05, 10/6 발행분 초안): 창이
+    10/5 06:50~10/6 06:00 인데 10/3 21:15 기사가 선정됐다.
+
+    사용자가 창을 정의한 말은 "10월4일 오전 6시50분**뉴스**~10월5일 오전6시까지
+    발행된거" 이고, 따로 "10/4 판에 10/1 기사가 실렸다"고 지적했다. 즉 기준은
+    **기사가 보도된 날**이다. 그래서 sent_at 창에 더해 기사 발행일 하한을 건다.
+
+    하한은 **날짜 단위**다. 시각으로 자르면 발행시각을 날짜만 주는 매체의
+    기사(origin_at 이 00:00 으로 들어온다)가 같은 날인데도 떨어진다.
+    허용 폭은 창 시작일에서 cs_top10_fill_days 만큼 거슬러 간 날까지 —
+    보충이 허용된 범위와 같게 둔다.
+    """
+    base = datetime.fromtimestamp(since, KST) - timedelta(
+        days=max(0, settings.cs_top10_fill_days))
+    return base.strftime("%Y-%m-%d")
+
+
+def drop_stale(rows: list, floor_day: str) -> list:
+    """기사 발행일이 하한보다 이른 행을 버린다. 발행일이 없는 행은 남긴다."""
+    out = []
+    for r in rows:
+        try:
+            o = float(r[K_ORIGIN])
+        except (TypeError, ValueError, IndexError):
+            out.append(r)
+            continue
+        if datetime.fromtimestamp(o, KST).strftime("%Y-%m-%d") >= floor_day:
+            out.append(r)
+    return out
+
+
+def quality_of(picked: list) -> float:
+    """초안끼리 견주는 점수. **건수가 먼저, 그다음이 적합도 평균**이다.
+
+    10건을 채우는 것이 1순위다(사용자가 거듭 지정). 같은 건수면 적합도 평균이
+    높은 쪽을 쓴다. 건수에 큰 가중치를 둬서 9건·평균 60 보다 10건·평균 40 이
+    이기도록 한다 — 자리가 빈 Top10 은 그 자체로 사고다.
+    """
+    if not picked:
+        return 0.0
+    fits = []
+    for sc, r in picked:
+        fit, _ = csfit.score(r[K_HEAD] or "", r[K_ENT] or "",
+                             r[K_PRI] or "", r[K_SCORE])
+        fits.append(fit)
+    # 세 번째 항: **기사가 얼마나 최신인가**. 건수·적합도가 같으면 더 최신인
+    # 쪽을 쓴다. 이게 없으면 18:00 초안이 전날 기사로 10건을 채운 순간,
+    # 밤새 들어온 창내 신선 기사로 만든 04:00 초안이 영영 기각된다
+    # (2026-10-05 감사). 최대 1점이라 건수·적합도 순위는 뒤집지 못한다.
+    now = datetime.now(KST).timestamp()
+    ages = []
+    for _sc, r in picked:
+        try:
+            ages.append((now - float(r[K_ORIGIN])) / 3600)
+        except (TypeError, ValueError):
+            ages.append(48.0)
+    fresh = max(0.0, 1.0 - (sum(ages) / len(ages)) / 48.0)
+    return len(picked) * 1000 + sum(fits) / len(fits) + fresh
+
+
+def select_for(store, asof: float, by_origin: bool = False) -> list:
+    """그 발행 시각 기준으로 뽑은 결과. run() 과 같은 길을 쓴다.
+
+    by_origin 기본값은 **False** 다 — run() 의 평시 경로와 같아야 한다.
+    예전엔 True 여서 초안은 원문 발행시각으로, 실발행은 봇 발행시각으로
+    후보를 잘랐다. 기준이 갈리면 초안에 있던 기사가 06:50 에 사라진다
+    (2026-10-05 감사).
+    """
+    since, until, _label = window(asof)
+    want = settings.daily_brief_count
+    rows = store.cstop10_candidates(since, until, settings.discard_threshold,
+                                    by_origin=by_origin)
+    rows = drop_stale(rows, origin_floor_day(since))
+    picked = select(rows, store=store, now=asof)
+    if len(picked) < want:
+        _prior = (store.cstop10_recent_clusters(since - 7 * 24 * 3600)
+                  + store.published_clusters_before(since))
+        picked = topup(picked, rows, store, asof, want, prior=_prior,
+                       ignore_cat_cap=True)
+    day = 24 * 3600
+    back = 0
+    while len(picked) < want and back < settings.cs_top10_fill_days:
+        back += 1
+        lo, hi = since - day * back, since - day * (back - 1)
+        extra = store.cstop10_candidates(lo, hi, settings.discard_threshold,
+                                         by_origin=by_origin)
+        if not extra:
+            continue
+        prior = (store.cstop10_recent_clusters(lo - 7 * day)
+                 + store.published_clusters_before(lo))
+        picked = topup(picked, extra, store, asof, want, prior=prior)
+    return picked
+
+
+async def build_draft(store, asof: float, dry_run: bool = False) -> dict:
+    """다음 발행분 초안을 만들고, **기존 초안보다 나을 때만** 갈아치운다.
+
+    2026-10-05 사용자 지정: 전날 18:00·22:00·당일 04:00 에 세 번 만들고,
+    뒤에 만든 것이 더 기준에 맞으면 앞서 만든 것을 지우고 대체한다.
+    """
+    import time as _t
+    pub = datetime.fromtimestamp(asof, KST).strftime("%Y-%m-%d")
+    picked = select_for(store, asof)
+    q = quality_of(picked)
+    prev = store.get_top10_draft(pub)
+    n = len(picked)
+    avg = (q - n * 1000) if n else 0
+    if prev and prev[1] >= q:
+        pn = int(prev[1] // 1000)
+        print(f"[draft] {pub} 유지 — 기존 {pn}건(품질 {prev[1]:.1f})이 "
+              f"이번 {n}건(품질 {q:.1f})보다 낫거나 같다")
+        return {"replaced": False, "count": pn, "quality": prev[1]}
+    if not dry_run:
+        store.save_top10_draft(pub, [r[K_KEY] for _, r in picked], q, _t.time())
+    was = f"{int(prev[1]//1000)}건" if prev else "없음"
+    print(f"[draft] {pub} 갱신 — {was} → {n}건 (적합도 평균 {avg:.1f})")
+    for i, (_, r) in enumerate(picked, 1):
+        print(f"   {i:>2}. {_posted_label(r)[:16]} {(r[K_HEAD] or '')[:44]}")
+    return {"replaced": True, "count": n, "quality": q}
+
+
+def draft_due(store, now: float | None = None) -> tuple[bool, str]:
+    """지금이 초안을 만들 시각인가. (해야하나, 이유)
+
+    설정한 시각(기본 18:00·22:00·04:00)을 **지난 지 1시간 안**이면 만든다.
+    상시 루프가 20분마다 물어보므로 시각마다 한 번은 반드시 걸린다.
+    """
+    now = now or datetime.now(KST).timestamp()
+    t = datetime.fromtimestamp(now, KST)
+    for hhmm in settings.cs_top10_draft_times:
+        hh, _, mm = hhmm.partition(":")
+        mark = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        gap = (t - mark).total_seconds()
+        if 0 <= gap < 3600:
+            # **그 회차를 이미 돌았으면 다시 돌지 않는다.** 상시 루프가 20분·
+            # 긴급 레인이 5분마다 물어봐서, 한 시간 창에 최대 12번 재생성됐다.
+            # 사용자가 말한 "총 3번"과 어긋나고 모델 호출만 낭비된다.
+            slot = f"{t:%Y-%m-%d}/{hhmm}"
+            if store is not None and store.get_setting("draft_slot") == slot:
+                return False, f"{hhmm} 회차는 이미 돌았다"
+            if store is not None:
+                store.put_setting("draft_slot", slot)
+            return True, f"{hhmm} 초안 생성 시각"
+    return False, "초안 생성 시각 아님"
+
+
+def next_publish_ts(now: float | None = None) -> float:
+    """지금 기준으로 **다음 06:50**. 초안은 그 시각 기준으로 만든다."""
+    now = now or datetime.now(KST).timestamp()
+    t = datetime.fromtimestamp(now, KST)
+    hh, _, mm = settings.cs_top10_time.partition(":")
+    nxt = t.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    if nxt <= t:
+        nxt += timedelta(days=1)
+    return nxt.timestamp()
+
+
 async def run(client, store, dry_run: bool | None = None,
               asof: float | None = None) -> int | None:
     """asof 를 주면 **그 시각 기준**으로 뽑는다(과거분 소급 생성용).
@@ -932,25 +1199,54 @@ async def run(client, store, dry_run: bool | None = None,
         rows = store.cstop10_candidates(since_ts, until,
                                         settings.discard_threshold,
                                         by_origin=by_origin)
+        rows = drop_stale(rows, origin_floor_day(since))
         return rows, select(rows, store=store, now=asof)
 
-    rows, picked = _pick(since)
+    # **확정된 초안이 있으면 그걸 그대로 낸다.**
+    # 전날 18:00·22:00·당일 04:00 에 미리 만들어 검증해 둔 것이다. 06:50 에
+    # 즉석에서 다시 뽑으면 그 사이 들어온 기사로 결과가 달라져, 미리 확인한
+    # 의미가 없어진다(2026-10-05 사용자 지정).
+    _pub = datetime.fromtimestamp(asof or until, KST).strftime("%Y-%m-%d")
+    _draft = store.get_top10_draft(_pub)
+    if _draft and _draft[0]:
+        _rows = store.rows_by_keys(_draft[0])
+        _min_ok = max(1, int(settings.daily_brief_count * 0.8))
+        if len(_rows) < _min_ok:
+            # **모자란 초안은 쓰지 않는다.** 1건짜리 초안이 그대로 나가는 것이
+            # 사용자가 막으려던 바로 그 사고다(2026-10-05 감사).
+            print(f"[cstop10] ⚠️ 초안이 {len(_rows)}건뿐({_min_ok}건 미만) — "
+                  f"버리고 새로 뽑는다")
+            _draft = None
+        elif len(_rows) == len(_draft[0]):
+            _built = datetime.fromtimestamp(_draft[2], KST)
+            print(f"[cstop10] 확정 초안 사용 — {len(_rows)}건 "
+                  f"({_built:%m-%d %H:%M} 생성)")
+            picked = [(0, r) for r in _rows]
+            rows = _rows
+        else:
+            print(f"[cstop10] 초안 {len(_draft[0])}건 중 {len(_rows)}건만 복원 — "
+                  f"새로 뽑는다")
+            _draft = None
+    if not _draft or not _draft[0]:
+        rows, picked = _pick(since)
 
     # 10건이 안 차면 **전날 기사에서 부족분만 채운다** (2026-10-05 사용자 지정).
     #
-    # 창을 넓혀 통째로 다시 뽑던 방식은 버렸다. 후보가 늘면 범주 상한·보장석
+    # 창을 넓혀 통째로 다시 뽑던 방식은 버렸다. 후보가 늘면 범주 상한·최소배정
     # 경쟁이 달라져 오히려 줄었다(실측: 24h 9건 → 60h 6건). 오늘 뽑은 것은
     # 그대로 두고 모자란 수만큼만 하루씩 앞으로 가며 더한다.
     #
     # 기준은 그대로다 — 같은 사건은 절대 두 번 싣지 않고, 범주·엔티티 상한과
     # 유료 교체·본문 확보 검사를 전부 통과한 것만 더한다. topup() 주석 참고.
+    _used_draft = bool(_draft and _draft[0] and picked)
+
     # **창 안에 남은 것을 먼저 다 쓴다** (2026-10-05 지적).
     #
     # 범주 상한에 막혀 창 안 기사가 7건이나 남았는데 전날로 넘어가 10/1~10/2
     # 기사를 가져왔다. 상한은 "한 범주가 독식하지 않게" 하려는 것이지 "창 밖에서
     # 가져오라"는 뜻이 아니다. 10 건이 안 차면 상한을 풀어서라도 **그날 창 안을
     # 먼저 비운다.** 그래도 모자랄 때만 전날로 간다.
-    if len(picked) < want:
+    if len(picked) < want and not _used_draft:
         print(f"[cstop10] {len(picked)}건 — 범주 상한을 풀고 창 안에서 먼저 채운다")
         # **기게재 검사를 빠뜨리면 안 된다.** 예전엔 published_clusters_before 만
         # 넘겨서, 어제 Top10 에 실린 사건의 다른 기사가 오늘 다시 들어왔다
@@ -1007,7 +1303,7 @@ async def run(client, store, dry_run: bool | None = None,
         return None
 
     thread = topics.thread_id_for("cs_top10")
-    # 📌 경전실 Top10 도 링크용 탭처럼 머리말을 먼저 띄운다
+    # 📌 A팀 Top10 도 링크용 탭처럼 머리말을 먼저 띄운다
     # (2026-10-05 사용자 지정). 본문이 2개로 나뉘는 날이 많아, 어디서
     # 그날 묶음이 시작하는지 날짜로 알려 줘야 한다.
     _d = datetime.fromtimestamp(until, KST)
@@ -1015,7 +1311,7 @@ async def run(client, store, dry_run: bool | None = None,
     try:
         hid = await publisher.send_raw(
             client,
-            f"📌 <b>{_d.month}월 {_d.day}일자 경전실 Top10 발행 시작합니다</b>",
+            f"📌 <b>{_d.month}월 {_d.day}일자 {settings.cs_top10_label} 발행 시작합니다</b>",
             thread)
         # **여기서 발행 기록을 남기지 않는다.** 머리말만 나가고 본문 전송이
         # 실패하면 due() 가 "오늘 이미 발행함"을 돌려주어 재시도가 영영 막힌다
@@ -1047,7 +1343,7 @@ async def run(client, store, dry_run: bool | None = None,
         _d = datetime.fromtimestamp(until, KST)
         try:
             await publisher.send_raw(
-                client, f"📌 <b>{_d.month}월 {_d.day}일자 top10 링크용 발행 시작합니다</b>",
+                client, f"📌 <b>{_d.month}월 {_d.day}일자 {settings.cs_links_label} 발행 시작합니다</b>",
                 links_thread)
             await asyncio.sleep(0.5)
         except Exception as exc:                          # noqa: BLE001

@@ -1,10 +1,10 @@
 name: bsp-pulse-cs-top10
 
-# 📌 경전실 Top10 — 매일 KST 06:50.
+# 📌 A팀 Top10 — 매일 KST 06:50.
 #
 # ☀️ Morning Brief(07:00, brief.yml)와 **선정 기준이 다르다.**
 #   Morning Brief : 모델의 strategic_score + 추천 서칭 순서 티어
-#   경전실 Top10  : csfit.score() — 경전실이 실제 공유한 125건의 주제 분포
+#   A팀 Top10  : csfit.score() — A팀이 실제 공유한 125건의 주제 분포
 #
 # GitHub 의 cron 은 UTC 다. KST 06:50 = UTC 21:50 (전날).
 #
@@ -27,9 +27,17 @@ on:
     # cron 을 여러 개 거는 이유: GitHub 무료 티어 예약은 best-effort 라 하루
     # 한 번짜리는 통째로 건너뛴다(2026-10-02 실측: 발화 0건). 세 번 걸면
     # 전부 빠질 확률이 그만큼 낮아진다. KST 06:50 = UTC 21:50 (전날).
-    - cron: "45 21 * * *"
+    # 06:45 로 두면 due() 가 "아직 06:50 전" 으로 무조건 거부한다 — 삼중 보험
+    # 중 하나가 가짜였다(2026-10-05 감사). 발행 시각 직후로 당긴다.
+    - cron: "51 21 * * *"
     - cron: "52 21 * * *"
     - cron: "5 22 * * *"
+    # 초안 생성 백업. 상시 루프가 죽어 있어도 다음날 발행분은 준비된다.
+    # KST 16:00·18:00·22:00·04:00 = UTC 07:00·09:00·13:00·19:00(전날).
+    - cron: "0 7 * * *"
+    - cron: "0 9 * * *"
+    - cron: "0 13 * * *"
+    - cron: "0 19 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -37,8 +45,14 @@ on:
         type: boolean
         default: true
 
+# 상태 DB 를 커밋해야 같은 기사를 다시 발행하지 않는다.
+permissions:
+  contents: write
+
 concurrency:
-  group: bsp-pulse-brief
+  # brief.yml 과 같은 그룹을 쓰면 07:00 브리프와 07:05 Top10 이 서로를 밀어낸다
+  # (GitHub 은 그룹당 대기열 1개). 백업끼리 취소하면 보험이 아니다.
+  group: bsp-pulse-top10
   cancel-in-progress: false
 
 jobs:
@@ -87,4 +101,5 @@ jobs:
           git config user.email "bsp-pulse@users.noreply.github.com"
           git add botstate.sqlite3 || true
           git diff --cached --quiet || git commit -m "chore: Morning Brief 기록 [skip ci]"
+          git pull -q --rebase --autostash || git rebase --abort || true
           git push || echo "[경고] push 실패 — 다음 실행에서 다시 시도"

@@ -5,7 +5,7 @@
     → STEP 8 텔레그램 발행 → (별도) STEP 9 Morning Brief
 
     python main.py --brief                   # ☀️ Morning Brief 생성 (07:00 KST)
-    python main.py --cstop10                 # 📌 경전실 Top10 생성 (06:55 KST)
+    python main.py --cstop10                 # 📌 A팀 Top10 생성 (06:55 KST)
     python main.py --brief --dry-run         # 브리프 내용만 확인, 발행 안 함
 
 
@@ -35,6 +35,7 @@ from collectors import (binance, bithumb, upbit, rss, telegram_channels, tg_web,
                         blockmedia_archive, blockmedia_research, coin68,
                         regulation)
 from config import settings
+import csfit
 import events
 from models import NewsItem
 import gnews
@@ -190,6 +191,11 @@ def importance_floor(category: str) -> int:
 
 
 # 🏢 한화그룹 탭 라우팅 가드용. csfit.RULES 의 '한화' 패턴과 같은 말들이다.
+# 제목의 **주어**가 규제기관이고 행위가 감독·제재·검토인가.
+_REGULATOR_LEAD_RE = re.compile(
+    r"^(금융위|금융위원회|금감원|금융감독원|공정위|공정거래위원회|감사원"
+    r"|국회입법조사처|금융당국|당국)\s*[,，]?")
+
 _HANWHA_RE = re.compile(r"한화|김승연|김동관|김동원|김동선|캐롯|피플라이프|갤러리아|애큐온")
 
 
@@ -375,7 +381,7 @@ async def _summarize_ahead(items: list[NewsItem],
 def backfill_queries(limit: int | None = None) -> list[str]:
     """소급 수집에 쓸 검색어. **상시 수집과 같은 질의를 쓴다.**
 
-    settings.regulation_sources 가 곧 경전실 기준이다 — 과장님이 주신 키워드
+    settings.regulation_sources 가 곧 A팀 기준이다 — 담당자이 주신 키워드
     74개와 추천 서칭 순서로 만든 구글뉴스 질의 목록이고, 상시 수집이 매일
     그걸로 돈다. 소급만 다른 검색어를 쓰면 **기준이 두 벌이 된다.**
     (예전엔 엔티티 목록으로 따로 만들었다 — 그래서 상시와 결과가 달랐다.)
@@ -400,6 +406,7 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
     stats: dict[str, int] = {}
     # BSP 판정 카운터 (§35 집계 로깅)
     rejected = below = stored_only = clustered = paywalled = lowconf = 0
+    offbrief = 0
     swapped = 0
     event_index = events.EventIndex()
     key_issue_count = store.key_issues_since(time.time() - 24 * 3600)
@@ -553,13 +560,40 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             print(f"[저장만] score {score} {item.title[:48]}")
             continue
 
+        # ── 발주 기준(csfit) 하한 — 일반 탭에도 적용한다 ──
+        #
+        # 2026-10-05 감사에서 드러난 구조적 구멍이다. 여태 일반 탭 게시는
+        # 모델의 strategic_score 하나로만 결정했고, 발주자가 준 기준을 구현한
+        # csfit 은 📌 Top10 단계에서만 쓰였다. 그래서 키워드 78개 중 **하나도**
+        # 안 걸리는 기사가 모델 점수 68~75 로 매일 올라갔다 — 발행 144건 중
+        # 17건(11.8%)이 csfit 범주 '기타' 였다(퇴직연금 5건·은행 해킹 10건이 주범).
+        #
+        # 모델 점수는 "전략적으로 중요한가"를 보고, csfit 은 "**이 팀이 실제로
+        # 공유하는 주제인가**"를 본다. 둘은 다른 질문이라 둘 다 통과해야 한다.
+        #
+        # 하한은 settings.general_fit_threshold(기본 20) 다. 그 값을 고른 근거는
+        # config.py 의 같은 이름 주석에 적어 두었다 — 20 미만은 RULES 어느 범주에도
+        # 안 걸리는 기사와 정확히 일치한다.
+        _fit, _rules = csfit.score(
+            data.get("title_ko") or item.title,
+            ",".join(data.get("main_entities") or []),
+            topic, score)
+        if _fit < settings.general_fit_threshold:
+            _judge(item, key, relevant=True, score=score, topic=topic,
+                   reason=f"발주 기준 미달(csfit {_fit} < "
+                          f"{settings.general_fit_threshold})",
+                   dry=dry_run)
+            offbrief += 1
+            print(f"[기준미달] csfit {_fit} (모델 {score}) {item.title[:40]}")
+            continue
+
         # ── 유료기사는 **같은 사건의 무료 매체 기사로 갈아탄다** ──
         #
         # 2026-10-05 사용자 지정: "거긴 유료기사니까 다른 무료기사 사이트에서
         # 똑같은 내용 있는 거 찾아와서 대체해."
         #
         # **막는 게 아니라 바꾼다.** 딜사이트·더벨·인베스트조선·연합인포맥스는
-        # 경전실이 실제로 공유하는 딜 전문지이고 Source 목록에도 들어 있다
+        # A팀이 실제로 공유하는 딜 전문지이고 Source 목록에도 들어 있다
         # (9/11~9/22 공유 96건 중 11건). 통째로 막으면 딜 뉴스가 사라진다.
         # 문제는 매체가 아니라 **전문을 못 읽는 링크**를 보내는 것이다.
         #
@@ -611,6 +645,24 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             lowconf += 1
             print(f"[본문불가] {item.source} {item.title[:44]}")
             continue
+
+        # **기사 발행시각이 수집시각보다 미래일 수는 없다.**
+        # insjournal 8건이 최대 8.8시간 미래로 기록돼 있었다 — 한국시각에
+        # Z(UTC)를 붙여 적는 매체를 그대로 믿어 9시간이 밀린 것이다
+        # (2026-10-05 감사). 그 값으로 창 판정과 인스턴트뷰 라벨이 둘 다 틀어진다.
+        #
+        # 9시간 안팎이면 그 밀림으로 보고 되돌린다. 그보다 크면 값을 못 믿으니
+        # 비운다 — 비면 is_stale 이 '날짜 불명'으로 보고 통과시키고, Top10 은
+        # origin_at 없는 행을 창 밖으로 친다.
+        if item.published_at:
+            _skew = item.published_at - time.time()
+            if 8 * 3600 < _skew < 10 * 3600:
+                item.published_at -= 9 * 3600
+                print(f"[시각보정] +9h 밀림 되돌림 | {item.title[:40]}")
+            elif _skew > 0:
+                print(f"[시각불명] 발행시각이 미래({_skew/3600:.1f}h) — 비움 | "
+                      f"{item.title[:36]}")
+                item.published_at = None
 
         # ── STEP 5: Event Deduplication / Clustering (§21) ──
         title_for_event = data.get("title_ko") or item.title
@@ -665,6 +717,31 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             # 됐다. Top10 은 primary_topic 을 읽으므로 탭은 고쳐졌는데 Top10
             # 라벨은 [한화그룹] 그대로였다(2026-10-05 감사).
             data["primary_topic"] = alt
+        # **규제기관이 주체면 ⚖️ 규제·정책이 먼저다.**
+        # "금융위, 토스뱅크 반값 엔화 거래 취소 적법성 검토 착수" 가 🔎 경쟁사
+        # 탭에 올라갔다(2026-10-05 감사). 제목의 주어가 금융위·금감원·공정위이고
+        # 행위가 감독·제재·검토면 그건 규제 기사다. 토픽 정의상 regulation_policy
+        # 는 priority 4, competitors_bigtech 는 5 라 규제가 앞선다.
+        _t = data.get("title_ko") or item.title or ""
+        if topic != "regulation_policy" and _REGULATOR_LEAD_RE.match(_t.strip()):
+            print(f"[탭보정] {topic} → regulation_policy | {_t[:40]}")
+            topic = "regulation_policy"
+            data["primary_topic"] = topic
+
+        # **한화가 거래 상대방일 뿐이면 🏢 한화그룹 탭이 아니다.**
+        # "BNK경남은행, 한화오션과 손잡고…" 가 한화그룹 탭에 올라갔다. 제목의
+        # 주어가 한화가 아니면 §8("기사의 실질적 핵심이 한화")을 못 채운다.
+        if topic == "hanwha_group":
+            _head = _t.split(",")[0].split("…")[0].strip()
+            if _head and not _HANWHA_RE.search(_head):
+                _alt2 = next((_topics.normalize_topic(c)
+                              for c in (data.get("secondary_topics") or [])
+                              if _topics.normalize_topic(c) != "hanwha_group"), "")
+                _alt2 = _alt2 or "insurance_finance"
+                print(f"[탭보정] 한화가 주어 아님 → {_alt2} | {_t[:40]}")
+                topic = _alt2
+                data["primary_topic"] = topic
+
         # 일반 기사는 Primary Topic 하나에만 게시한다. 여러 탭에 복제하지 않는다.
         data["category"] = topic
         data["headline"] = data.get("title_ko") or item.title
@@ -750,6 +827,8 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
     if lowconf:
         print(f"[집계] 본문 접근 실패라 제외 {lowconf}건 "
               f"— 본문이 열리는 기사를 기다린다")
+    if offbrief:
+        print(f"[집계] 발주 기준(csfit) 미달로 제외 {offbrief}건")
     if swapped:
         print(f"[집계] 유료 → 무료 매체로 갈아탐 {swapped}건")
 
@@ -870,6 +949,23 @@ async def main():
                 print(f"[backfill] 미발행 '봤음' 기록 {_forgot}건 해제 — 다시 판정한다")
             print(f"[backfill] 수집 {len(items)}건 — 판정·발행으로 넘긴다")
             await process_items(client, items, warm=False, dry_run=dry_run)
+            return
+
+        if "--cstop10-draft" in sys.argv:
+            # 다음 06:50 발행분 초안을 만든다. --if-due 를 붙이면 설정한
+            # 시각(18:00·22:00·04:00)일 때만 돈다. cstop10.build_draft 주석 참고.
+            import cstop10
+            if "--if-due" in sys.argv:
+                ok, why = cstop10.draft_due(store)
+                if not ok:
+                    print(f"[draft] 건너뜀 — {why}")
+                    return
+                print(f"[draft] {why}")
+            _target = cstop10.next_publish_ts()
+            print(f"[draft] 대상 발행 "
+                  f"{datetime.fromtimestamp(_target, KST):%m-%d %H:%M} KST")
+            await cstop10.build_draft(store, _target,
+                                      dry_run=bool(dry_run or settings.dry_run))
             return
 
         if "--cstop10" in sys.argv:

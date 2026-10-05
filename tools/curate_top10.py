@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""사람이 고른 기사 목록으로 📌 경전실 Top10 과 🔗 링크용을 발행한다.
+"""사람이 고른 기사 목록으로 📌 A팀 Top10 과 🔗 링크용을 발행한다.
 
     venv/bin/python tools/curate_top10.py urls.txt 2026-10-05T06:50
 
 **봇이 뽑은 게 아니라 사람이 직접 고른 날** 쓴다(2026-10-05). 봇이 멈춰 있던
-날은 후보 창이 비어 Top10 이 성립하지 않는데, 그날 아침 과장님이 이미 10건을
+날은 후보 창이 비어 Top10 이 성립하지 않는데, 그날 아침 담당자이 이미 10건을
 공유해 두었다면 그걸 그대로 Top10 으로 올리는 게 맞다.
 
   1) 각 주소를 평소와 **같은 요약 경로**(summarizer.summarize)로 돌린다
@@ -67,12 +67,36 @@ def _parse_published(html_text: str) -> float | None:
         g = m.groups()
         try:
             if len(g) == 1:
-                t = _dt.datetime.fromisoformat(g[0].strip().replace("Z", "+00:00"))
+                raw = g[0].strip()
+                t = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
                 if t.tzinfo is None:
                     t = t.replace(tzinfo=KST)
-                return t.timestamp()
-            y, mo, d, hh, mm = (int(x) for x in g)
-            return _dt.datetime(y, mo, d, hh, mm, tzinfo=KST).timestamp()
+                ts = t.timestamp()
+                # **국내 매체는 한국 시각을 쓰면서 Z(UTC)를 붙이는 곳이 있다.**
+                # sateconomy 가 '2026-10-05T04:10:09Z' 로 적어 UTC 로 읽으면
+                # 13:10 이 되는데, 화면에는 '2026.10.05 04:10' 로 찍힌다.
+                # 실제 발행은 04:10 KST 였다(2026-10-05 감사: 봇이 09:22 에
+                # 내보낸 기사인데 발행시각이 13:10 로 기록됐다).
+                #
+                # 그래서 **같은 페이지의 평문 날짜와 대조한다.** ISO 의 시·분이
+                # 평문과 같으면 그 ISO 는 현지시각을 적은 것이므로 KST 로 읽는다.
+                naive = t.replace(tzinfo=None)
+                # 월·일·시를 1~2자리 모두 받는다. 예전엔 2자리만 받아
+                # '2026.10.5 4:10' 처럼 적는 페이지를 놓쳤다(2026-10-05 감사).
+                if re.search(
+                        rf"{naive.year}[.\-/]\s*0?{naive.month}[.\-/]\s*"
+                        rf"0?{naive.day}[^\d]{{1,4}}0?{naive.hour}:{naive.minute:02d}",
+                        html_text):
+                    ts = naive.replace(tzinfo=KST).timestamp()
+            else:
+                y, mo, d, hh, mm = (int(x) for x in g)
+                ts = _dt.datetime(y, mo, d, hh, mm, tzinfo=KST).timestamp()
+            # 마지막 안전장치 — 기사 발행시각이 **지금보다** 미래일 수 없다.
+            # (수집이 발행 9시간 뒤에 돌면 now 기준으로는 안 걸리므로, 위의
+            #  평문 대조가 1차 방어이고 이건 2차다.)
+            if ts > _dt.datetime.now(KST).timestamp():
+                continue
+            return ts
         except (ValueError, TypeError):
             continue
     return None
@@ -160,7 +184,7 @@ async def main():
                 print(f"  {i:>2}. 제목 실패 — 건너뜀: {real[:58]}")
                 continue
             paras, why_fail = telegraph.fetch_article(real, title=title)
-            item = NewsItem(source=src or "경전실 공유", unique_id=real, title=title,
+            item = NewsItem(source=src or "A팀 공유", unique_id=real, title=title,
                             url=real, body="\n".join(paras)[:6000],
                             region_hint="국내")
             data = await summarize(item)
@@ -177,6 +201,22 @@ async def main():
             print(f"  {i:>2}. 적합{fit:>3} [{data['category']:<20}] {data['headline'][:42]}")
             if origin is None:
                 print(f"       ⚠️ 발행시각을 못 찾았다 — 창 끝 시각으로 대신한다")
+            # **사람이 고른 목록은 봇이 빼지 않는다.**
+            # 같은 사건 판정을 걸었더니 교보생명 악사손보 인수(7번)가 한화·교보
+            # 저축은행 인수(1번)와 묶여 떨어졌다 — 서로 다른 딜이다(2026-10-05).
+            # 무엇을 실을지는 고른 사람이 정한다. 도구는 형식만 맞춘다.
+            # **창 밖 기사는 경고한다.** 이 경로엔 창 검사가 없어서 10/5 판에
+            # 보충 하한을 21시간 넘긴 기사가 실렸다(2026-10-05 감사).
+            # 사람이 고른 목록이라 빼지는 않되, 무엇이 범위 밖인지는 알려준다.
+            _since, _until, _ = K.window(asof)
+            _lo = _since - settings.cs_top10_fill_days * 86400
+            _o = origin or asof
+            if not (_lo < _o <= _until):
+                _d = datetime.fromtimestamp(_o, KST)
+                _ls = datetime.fromtimestamp(_lo, KST)
+                _us = datetime.fromtimestamp(_until, KST)
+                print(f"       ⚠️ 창 밖 — 기사 {_d:%m-%d %H:%M} / "
+                      f"허용 {_ls:%m-%d %H:%M}~{_us:%m-%d %H:%M}")
             picked.append((fit, _row(data, real, origin or asof, text)))
 
     if not picked:
@@ -203,7 +243,7 @@ async def main():
     d = datetime.fromtimestamp(asof, KST)
     async with httpx.AsyncClient() as client:
         await P.send_raw(client,
-                         f"📌 <b>{d.month}월 {d.day}일자 경전실 Top10 발행 시작합니다</b>",
+                         f"📌 <b>{d.month}월 {d.day}일자 {settings.cs_top10_label} 발행 시작합니다</b>",
                          thread)
         await asyncio.sleep(0.5)
         for i, m in enumerate(msgs):
@@ -214,7 +254,7 @@ async def main():
         lt = topics.thread_id_for("cs_top10_links")
         if lt:
             await P.send_raw(client,
-                             f"📌 <b>{d.month}월 {d.day}일자 top10 링크용 발행 시작합니다</b>", lt)
+                             f"📌 <b>{d.month}월 {d.day}일자 {settings.cs_links_label} 발행 시작합니다</b>", lt)
             await asyncio.sleep(0.5)
             for j, (t, u) in enumerate(K.render_links(picked, label, store)):
                 mid = await P.send_raw(client, t, lt, preview_url=u)
