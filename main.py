@@ -1029,8 +1029,11 @@ async def main():
             _target = cstop10.next_publish_ts()
             print(f"[draft] 대상 발행 "
                   f"{datetime.fromtimestamp(_target, KST):%m-%d %H:%M} KST")
+            # client 를 넘겨야 초안이 탭에 **실제로 올라간다**
+            # (2026-10-05 발주자 지정). 안 넘기면 DB 에만 저장된다.
             await cstop10.build_draft(store, _target,
-                                      dry_run=bool(dry_run or settings.dry_run))
+                                      dry_run=bool(dry_run or settings.dry_run),
+                                      client=client)
             return
 
         if "--cstop10" in sys.argv:
