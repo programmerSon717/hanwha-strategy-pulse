@@ -16,7 +16,10 @@ import os, subprocess, sqlite3, sys, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB = os.path.join(ROOT, "botstate.sqlite3")
 TABLES = ("digest_log", "iv_page", "judgment", "published",
-          "resolved_url", "seen", "seen_urls", "top10_draft")
+          "resolved_url", "seen", "seen_urls", "top10_draft",
+          # setting 이 빠져 있어 draft_slot·draft_heal 마커가
+          # 유실됐다(2026-10-05 감사).
+          "setting")
 
 
 def cols(c, t, db="main"):

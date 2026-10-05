@@ -435,7 +435,11 @@ class Store:
             return c.execute(
                 "SELECT headline, main_entities, event_type, sent_at"
                 "  FROM published"
-                " WHERE sent_at > ? AND headline IS NOT NULL AND headline <> ''"
+                # **채널에 실제로 남아 있는 것만 센다.** 중복으로 지웠거나
+                # 저신뢰로 버린 행(message_id IS NULL)이 '기발행'으로
+                # 신규 기사를 막고 있었다(2026-10-05 감사, 창 안 13건).
+                " WHERE sent_at > ? AND message_id IS NOT NULL"
+                "   AND headline IS NOT NULL AND headline <> ''"
                 " ORDER BY sent_at DESC LIMIT 400",
                 (time.time() - within_sec,)).fetchall()
 
