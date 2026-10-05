@@ -397,13 +397,18 @@ def select(rows: list, count: int | None = None, store=None,
 
     # 3차: 최근 Top10 에 이미 실린 사건 제외
     if store is not None:
-        recent = store.cstop10_recent_clusters(now - 7 * 24 * 3600)
+        # **2일치를 엄격 모드로 본다.** 7일치를 느슨한 모드로 대면 회사명·
+        # 분야가 같다는 이유로 걸려, 창 안 후보 20건 중 12건이 "기게재"로
+        # 빠졌다 — 그 빈자리를 며칠 전 기사가 메웠다(2026-10-05 발주자 지적).
+        # 막아야 하는 것은 **같은 사건의 반복**이지 같은 회사·같은 분야가
+        # 아니다. strict=True 는 회사명 말고 겹치는 낱말을 반드시 요구한다.
+        recent = store.cstop10_recent_clusters(now - 2 * 24 * 3600)
         if recent:
             keep = []
             for sc, r in merged:
                 hit = any(_same(r[K_HEAD] or "", r[K_ENT] or "",
                                 r[K_ETYPE] if len(r) > K_ETYPE else "",
-                                h or "", e or "", t or "")
+                                h or "", e or "", t or "", strict=True)
                           for h, e, t in recent)
                 if hit:
                     print(f"[cstop10] 기게재 사건 제외: {(r[K_HEAD] or '')[:40]}")
@@ -421,7 +426,11 @@ def select(rows: list, count: int | None = None, store=None,
     # Top10 은 원래 그중에서 고르는 물건이다. 창 **밖**(그 전)에 나간 것만 뺀다.
     if store is not None:
         since, _until, _lab = window(now)
-        prior = store.published_clusters_before(since)
+        # **창 직전 하루만 본다.** 기본 14일치를 보니 같은 분야 기사가
+        # 줄줄이 걸려 창 안 후보 20건 중 8건이 빠졌다(2026-10-05 발주자
+        # 지적: 10/6 판에 10/5 내용이 없다). 막아야 하는 것은 "어제 이미
+        # 전한 사건을 오늘 또" 이지, 2주 전 비슷한 기사가 아니다.
+        prior = store.published_clusters_before(since, since - 24 * 3600)
         if prior:
             keep = []
             for sc, r in merged:
@@ -1156,7 +1165,7 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
         # (2026-10-05 발주자 지적: 10/6 판에 10/1·10/2 기사가 섞였다).
         # 막아야 하는 것은 **같은 사건이 Top10 에 반복되는 것**이고,
         # 그건 cstop10_recent_clusters(이전 Top10)가 담당한다.
-        _prior = store.cstop10_recent_clusters(since - 7 * 24 * 3600)
+        _prior = store.cstop10_recent_clusters(since - 2 * 24 * 3600)
         picked = topup(picked, rows, store, asof, want, prior=_prior,
                        ignore_cat_cap=True)
     day = 24 * 3600
@@ -1174,7 +1183,7 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
         extra = drop_stale(extra, origin_floor_day(since))
         if not extra:
             continue
-        prior = store.cstop10_recent_clusters(lo - 7 * day)
+        prior = store.cstop10_recent_clusters(lo - 2 * day)
         picked = topup(picked, extra, store, asof, want, prior=prior)
     # run() 과 같은 최후 보충. 초안과 실발행이 어긋나면 미리 검증한 의미가 없다.
     while len(picked) < want and back < settings.cs_top10_max_fill_days:
@@ -1188,7 +1197,7 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
         extra = drop_stale(extra, origin_floor_day(since))
         if not extra:
             continue
-        prior = store.cstop10_recent_clusters(lo - 7 * day)
+        prior = store.cstop10_recent_clusters(lo - 2 * day)
         picked = topup(picked, extra, store, asof, want, prior=prior)
     return picked
 
@@ -1590,7 +1599,7 @@ async def run(client, store, dry_run: bool | None = None,
         # (2026-10-05 발주자 지적: 10/6 판에 10/1·10/2 기사가 섞였다).
         # 막아야 하는 것은 **같은 사건이 Top10 에 반복되는 것**이고,
         # 그건 cstop10_recent_clusters(이전 Top10)가 담당한다.
-        _prior = store.cstop10_recent_clusters(since - 7 * 24 * 3600)
+        _prior = store.cstop10_recent_clusters(since - 2 * 24 * 3600)
         picked = topup(picked, rows, store, asof or datetime.now(KST).timestamp(),
                        want, prior=_prior, ignore_cat_cap=True)
 
@@ -1627,7 +1636,7 @@ async def run(client, store, dry_run: bool | None = None,
         extra = drop_stale(extra, origin_floor_day(since))
         if not extra:
             continue
-        prior = store.cstop10_recent_clusters(lo - 7 * day)
+        prior = store.cstop10_recent_clusters(lo - 2 * day)
         before = len(picked)
         picked = topup(picked, extra, store,
                        asof or datetime.now(KST).timestamp(), want, prior=prior)
