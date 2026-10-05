@@ -810,8 +810,16 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
             # 🚨 주요이슈 — 집계 토픽이므로 원 토픽과 중복 게시가 허용된다 (§6, §20).
             # 이미 렌더된 본문을 그대로 재사용하므로 모델을 다시 부르지 않는다.
             mirror_ids = []
-            if data.get("is_key_issue") and score >= settings.key_issue_threshold:
-                if key_issue_count < settings.key_issue_daily_cap:
+            # 사고·피해 기사는 점수와 무관하게 올린다(2026-10-05 발주자 지시).
+            # 해킹·정보유출 14건이 전부 임계값 미달로 주요이슈에 못 올라가고
+            # 네 토픽에 흩어졌다. events.looks_incident 주석 참고.
+            _incident = events.looks_incident(data.get("headline") or "", data)
+            _ki = (data.get("is_key_issue")
+                   and score >= settings.key_issue_threshold) or _incident
+            if _ki:
+                # 사고·피해는 일일 상한도 넘긴다 — "무조건 주요이슈로".
+                # 같은 사건은 위 중복 제거가 한 건으로 접으므로 범람하지 않는다.
+                if _incident or key_issue_count < settings.key_issue_daily_cap:
                     ktid = topics_thread_id("key_issues")
                     body = data.get("_rendered", "")
                     if ktid and body:
