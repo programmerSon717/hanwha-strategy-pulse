@@ -92,7 +92,16 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         # --if-due: 06:50 전에 깨면 아무것도 하지 않고 빠진다. 지난 뒤에
         # 깨고 오늘 아직 안 나갔을 때만 낸다. 중복 발행이 원천 차단된다.
-        run: python main.py --cstop10 --if-due
+        #
+        # 초안도 같은 단계에서 돌린다. **이게 없으면 초안 백업 cron 이
+        # 가짜다** — 16·18·22·04시에 깨어나 발행만 시도하고, --if-due 가
+        # "06:50 아님" 으로 즉시 빠져 아무것도 안 했다(2026-10-05 발견).
+        # 주석은 "상시 루프가 죽어 있어도 다음날 발행분은 준비된다"고
+        # 적혀 있었지만 실제로는 준비되지 않았다.
+        # 둘 다 --if-due 라 제 시각이 아니면 비용 없이 빠진다.
+        run: |
+          python main.py --cstop10 --if-due
+          python main.py --cstop10-draft --if-due
 
       - name: 브리프 기록 저장
         if: ${{ github.event.inputs.dry_run != 'true' }}
