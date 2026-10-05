@@ -1164,6 +1164,26 @@ def draft_due(store, now: float | None = None) -> tuple[bool, str]:
             if store is not None:
                 store.put_setting("draft_slot", slot)
             return True, f"{hhmm} 초안 생성 시각"
+
+    # **자가복구.** 위 슬롯은 "시각을 지난 지 1시간 안" 에만 걸린다. 그 한 시간
+    # 동안 루프가 죽어 있거나 cron 이 발화하지 않으면 그 회차는 영영 날아간다
+    # (2026-10-05 실측: 16:00 슬롯이 통째로 날아갔다. 가동 중인 런이 초안을
+    # 모르는 옛 코드였고, 새로 추가한 cron 은 아직 발화하지 않았다).
+    #
+    # 발행 시각이 가까운데 쓸 만한 초안이 없으면 슬롯과 무관하게 만든다.
+    # 06:50 에 쓰이는 하한(daily_brief_count 의 80%)과 같은 기준으로 본다 —
+    # 그보다 적은 초안은 어차피 버려지므로 없는 것과 같다.
+    if store is not None:
+        pub = datetime.fromtimestamp(next_publish_ts(now), KST).strftime("%Y-%m-%d")
+        d = store.get_top10_draft(pub)
+        need = max(1, int(settings.daily_brief_count * 0.8))
+        if not d or not d[0] or len(d[0]) < need:
+            # 한 시간에 한 번으로 묶는다. 20분마다 다시 뽑으면 모델 호출만 탄다.
+            stamp = f"{pub}/{t:%H}"
+            if store.get_setting("draft_heal") != stamp:
+                store.put_setting("draft_heal", stamp)
+                have = len(d[0]) if d and d[0] else 0
+                return True, f"초안 {have}건뿐({need}건 필요) — 슬롯 밖 보충 생성"
     return False, "초안 생성 시각 아님"
 
 
