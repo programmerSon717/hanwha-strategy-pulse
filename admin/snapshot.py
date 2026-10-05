@@ -14,7 +14,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KST = datetime.timezone(datetime.timedelta(hours=9))
-REPO_API = "https://api.github.com/repos/programmerSon717/crypto-news-bot"
+REPO_API = "https://api.github.com/repos/programmerSon717/kr-fin-news-digest"
 BACKUPS = os.path.expanduser("<백업 디렉터리>")
 
 

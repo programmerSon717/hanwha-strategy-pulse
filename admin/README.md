@@ -1,6 +1,6 @@
 # 운영 콘솔 (공개 웹)
 
-**https://programmerson717.github.io/crypto-news-bot/**
+**https://programmerson717.github.io/kr-fin-news-digest/**
 
 Claude 계정이 없어도 누구나 열 수 있다. 봇이 폴링할 때마다 자동으로 갱신된다.
 
