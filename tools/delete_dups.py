@@ -20,6 +20,12 @@ DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                   "botstate.sqlite3")
 
 
+# 같은 사건으로 볼 최대 시차. events.parts() 의 시간 버킷은 절대 격자라,
+# 과거 행을 지금 시각으로 다시 계산하면 전부 같은 버킷이 된다 — 88시간
+# 떨어진 서로 다른 정책이 "같은 사건" 이 됐다(2026-10-05 감사).
+MAX_GAP_H = 36.0
+
+
 def losers():
     c = sqlite3.connect(DB)
     rows = c.execute(
@@ -30,6 +36,10 @@ def losers():
     for mid, tid, h, e, et, sa, mir, ext in rows:
         ents = [x.strip() for x in (e or "").split(",") if x.strip()]
         d = {"main_entities": ents, "event_type": et, "title_ko": h}
+        # 확정 사실(본계약·승인·제재 …)은 삭제 후보에서 뺀다. 발행 쪽이
+        # material 로 허용한 것을 삭제 쪽이 지우면 두 규칙이 모순된다.
+        if events.looks_material(h, d):
+            continue
         it.append(dict(mid=mid, tid=tid, h=h, d=d, sa=sa, mir=mir, ext=ext,
                        cov=events.coverage(d, h)))
     out = {}
@@ -37,12 +47,30 @@ def losers():
         for b in it:
             if a is b or a["cov"] >= b["cov"]:
                 continue
+            # **시차 제한.** parts() 의 시간 버킷은 절대 격자라, 과거 행을
+            # 지금 시각으로 다시 계산하면 전부 같은 버킷이 된다. 그래서
+            # 88시간 떨어진 서로 다른 정책이 "같은 사건" 이 됐다(2026-10-05).
+            if abs(float(a["sa"]) - float(b["sa"])) > MAX_GAP_H * 3600:
+                continue
             if not events.same_event(events.parts(a["d"], a["h"]), a["h"],
                                      events.parts(b["d"], b["h"]), b["h"]):
                 continue
             if a["mid"] not in out or b["cov"] > out[a["mid"]][0]["cov"]:
                 out[a["mid"]] = (b, a)
-    return c, out
+
+    # **고정점 검사.** '남길 기사' 자신이 삭제 대상이면 둘 다 지워져 사건이
+    # 채널에서 통째로 사라진다. 실측 9건이었다(2026-10-05 감사).
+    # 승자가 살아남을 때까지 사슬을 따라 올라가고, 끝내 못 찾으면 뺀다.
+    fixed = {}
+    for mid, (w, l) in out.items():
+        seen, cur = {mid}, w
+        while cur["mid"] in out and cur["mid"] not in seen:
+            seen.add(cur["mid"])
+            cur = out[cur["mid"]][0]
+        if cur["mid"] in out:
+            continue            # 사슬이 닫혔다 — 건드리지 않는다
+        fixed[mid] = (cur, l)
+    return c, fixed
 
 
 async def main():

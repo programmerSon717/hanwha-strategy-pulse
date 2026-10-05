@@ -153,7 +153,20 @@ _GENERIC_TOKENS = {
     # 이 같은 사건으로 묶였다 — 주체도 내용도 다른 기사다.
     "확장", "본격화", "가시화", "전환", "개편", "점검", "부각", "대두",
     "나서", "속도", "박차", "모색", "제고", "개선", "성장", "실적",
+    # 2026-10-05 감사 2차. 아래는 해당 분야 기사 절반에 들어가는 말인데
+    # '변별력 있는 낱말' 로 인정돼 무관한 기사를 이었다.
+    #   '규제' → 보험광고 규제 × 저축은행 자본적정성 규제
+    #   '증권사'·'과징금' → 서로 다른 세 정책이 한 사건으로
+    #   'ai'·'보안' → KB 플랫폼 로드맵 × 5대은행 AI 보안
+    #   '유출'·'지원'·'변화'·'진입'·'미국' 도 같은 유형이다.
+    "ai", "보안", "유출", "침해", "지원", "변화", "규제", "과징금", "제재",
+    "증권사", "은행권", "보험사", "진입", "미국", "일본", "중국", "유럽",
+    "고객", "정보", "서비스", "플랫폼", "사업", "전략", "협력", "경쟁",
 }
+
+
+# 금액·수치 토큰은 변별력이 없다. "5000억" 하나로 서로 다른 딜이 묶였다.
+_NUM_TOKEN = re.compile(r"^[0-9][0-9,.]*(억|조|만|원|%|%p|배|건|명|주|달러)?$")
 
 
 # 사건의 '종류'만 말할 뿐 어느 사건인지는 못 가르는 낱말.
@@ -162,6 +175,21 @@ _ACTION_TOKENS = {
     "인수", "매각", "합병", "지분", "출자", "투자", "협약", "제휴", "체결",
     "추진", "확정", "검토", "발표", "출시", "진출", "설립", "제재", "개편",
 }
+
+
+def _aliases_of(canon: str) -> set:
+    """정식명에 딸린 별칭 전부. 엔티티 사전에서 끌어온다."""
+    try:
+        from config import entity_groups
+    except Exception:
+        return set()
+    out = set()
+    for group in entity_groups().values():
+        for c, al in group.items():
+            if _norm(c) == _norm(canon):
+                out.update(al)
+                out.add(c)
+    return out
 
 
 def _distinctive_overlap(a: str, b: str, ents: frozenset = frozenset()) -> bool:
@@ -177,6 +205,14 @@ def _distinctive_overlap(a: str, b: str, ents: frozenset = frozenset()) -> bool:
     for e in ents:
         drop |= _tokens(e)
         names.add(_norm(e))
+        # **별칭까지 넣는다.** canonical_entity 가 '신한은행'→'신한금융' 으로
+        # 환원하므로 names 에는 정식명만 남고, 제목의 '신한은행' 은 걸러지지
+        # 않아 회사 이름이 '변별력 있는 낱말' 로 통과했다. 오탐 14쌍 중 5쌍이
+        # 이 한 줄 때문이었다(2026-10-05 감사).
+        # 변수명 주의: 바깥 인자 a(제목)를 가리면 안 된다.
+        for _al in _aliases_of(e):
+            names.add(_norm(_al))
+            drop |= _tokens(_al)
     drop |= names
 
     def _is_entity(t: str) -> bool:
@@ -186,8 +222,11 @@ def _distinctive_overlap(a: str, b: str, ents: frozenset = frozenset()) -> bool:
         # 엔티티 이름을 품은 낱말은 전부 엔티티 언급으로 본다.
         return any(n and (n in t or t in n) for n in names)
 
-    ta = {t for t in _tokens(a) if t not in drop and not _is_entity(t)}
-    tb = {t for t in _tokens(b) if t not in drop and not _is_entity(t)}
+    def _ok(t):
+        return t not in drop and not _is_entity(t) and not _NUM_TOKEN.match(t)
+
+    ta = {t for t in _tokens(a) if _ok(t)}
+    tb = {t for t in _tokens(b) if _ok(t)}
     return bool(ta & tb)
 
 
@@ -205,11 +244,19 @@ def coverage(data: dict, title: str = "") -> int:
     세 번째가 주체(금융위+금감원)도, 대상(은행+2금융권+전 금융사 CEO)도,
     맥락(AI 해킹)도 모두 포함한다. 나머지는 그 부분집합이다.
     """
+    # 엔티티 수 가중을 10 → 6 으로 낮춘다. 실측상 coverage 점수의 68% 가
+    # 엔티티 개수였는데, 그건 모델이 기사마다 다르게 적는 값이라 '더 큰
+    # 개념' 이 아니라 **모델의 작성 변덕**을 재고 있었다. 실제로 "애큐온 인수
+    # + 한화투자증권 유상증자" 처럼 **두 사건을 섞은 기사**가 엔티티 3개로
+    # 이겨, 지분율·본계약을 담은 기사를 눌렀다(2026-10-05 감사).
     ents = len(_entity_set(data, title))
     # 범위를 넓히는 표현. "전 금융사"·"전 금융권" 은 개별 회사보다 큰 집합이다.
     scope = len(re.findall(r"전\s*금융|금융권\s*전체|업계\s*전반|전\s*업권"
                            r"|잇따른|잇단|전반|일제히|동시", _norm(title)))
-    return ents * 10 + scope * 5 + min(len(_tokens(title)), 12)
+    # 확정 사실(본계약·확정·승인·제재 …)은 가장 큰 가점이다. 딜에서 가장
+    # 중요한 진전이 '포괄성' 때문에 밀려 버려지던 문제를 막는다.
+    material = 20 if looks_material(title, data) else 0
+    return material + ents * 6 + scope * 5 + min(len(_tokens(title)), 12)
 
 
 def representative_score(data: dict, source: str, body_len: int) -> tuple:
@@ -244,21 +291,31 @@ class EventIndex:
         fp = fingerprint(data, title)
         if fp in self._by_fp:
             return fp
-        for known_fp, known_title in self._titles:
-            if similarity(title, known_title) >= TITLE_SIMILARITY:
-                return known_fp
+        # **각 사건의 대표하고만 견준다.** 예전엔 지금까지 들어온 제목 전부와
+        # 비교해, A—B 가 닮고 B—C 가 닮으면 A 와 C 가 한 사건이 됐다
+        # (단일연결 체인). 실측: 방카슈랑스 제휴 → 신한은행 유출 → 보안
+        # 취약점 → 생보사 유동성이 한 덩어리가 돼 3건이 삭제 대상이 됐다
+        # (2026-10-05 감사). 대표하고만 견주면 체인이 한 칸에서 끊긴다.
         mine = parts(data, title)
-        for known_fp, known_parts, known_title in self._parts:
-            if same_event(mine, title, known_parts, known_title):
-                return known_fp
-        return None
+        best, best_sim = None, 0.0
+        for known_fp, cur in self._by_fp.items():
+            kt = cur["title"]
+            sim = similarity(title, kt)
+            if sim >= TITLE_SIMILARITY or same_event(mine, title,
+                                                     cur["parts"], kt):
+                # 여럿에 걸리면 **가장 닮은 쪽**에 붙인다. 먼저 온 것에
+                # 붙이면 투입 순서에 따라 결과가 달라진다.
+                if sim >= best_sim or best is None:
+                    best, best_sim = known_fp, sim
+        return best
 
     def add(self, data: dict, title: str, source: str, body_len: int) -> str:
         fp = self.match(data, title) or fingerprint(data, title)
         rep = representative_score(data, source, body_len)
         prev = self._by_fp.get(fp)
         if prev is None or rep > prev["rep"]:
-            self._by_fp[fp] = {"rep": rep, "title": title, "source": source}
+            self._by_fp[fp] = {"rep": rep, "title": title, "source": source,
+                               "parts": parts(data, title)}
         self._titles.append((fp, title))
         self._parts.append((fp, parts(data, title), title))
         return fp
@@ -303,7 +360,10 @@ INCIDENT_RE = re.compile(
     r"|횡령|배임|사기|부당\s*대출|불완전판매|불법\s*계좌"
     r"|제재|과징금|과태료|징계|적발|압수수색|고발|기소|검사\s*착수"
     r"|피해\s*확산|피해\s*규모|손실\s*발생|대규모\s*손실"
-    r"|리콜|결함|사고\s*발생",
+    r"|리콜|사고\s*발생"
+    # '결함' 은 뺐다 — 이 봇 lede 는 "~함." 명사형 종결을 써서
+    # "협약을 **체결함**" 이 전부 사고로 잡혔다(실측 3/3 오탐).
+    r"|제품\s*결함|구조적\s*결함|설계\s*결함",
     re.I)
 
 

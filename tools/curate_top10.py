@@ -154,6 +154,14 @@ def _store_rows(store, picked):
         store.record_published(r[K.K_KEY], None, None, r[K.K_URL], r[K.K_HEAD],
                                category=r[K.K_PRI], lede=r[K.K_LEDE],
                                text=r[K.K_TEXT], origin_at=r[K.K_ORIGIN])
+        # **'이미 봤다' 도 반드시 찍는다.** 이게 없어 사람이 고른 10건이
+        # seen/seen_urls 어느 쪽에도 없었고, 같은 기사가 수집되면 정상
+        # 발행 경로로 **다시 나갔다**(2026-10-05 감사, 실측 9건 무방비).
+        # 게다가 record_published 는 INSERT OR REPLACE 라 재발행 한 번에
+        # cs_top10_date·점수·클러스터가 전부 NULL 로 날아간다.
+        store.mark_seen(r[K.K_KEY], "curated", r[K.K_HEAD])
+        if r[K.K_URL]:
+            store.mark_url_seen(r[K.K_URL], "curated", r[K.K_HEAD])
         with sqlite3.connect(settings.db_path) as c:
             c.execute("""UPDATE published
                             SET sent_at=?, main_entities=?, event_type=?,

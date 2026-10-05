@@ -104,7 +104,9 @@ jobs:
           python main.py --cstop10-draft --if-due
 
       - name: 브리프 기록 저장
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+        # **always() 가 필요하다.** 앞 단계가 타임아웃으로 죽으면 발행은
+        # 됐는데 기록 커밋이 안 돼, 다음 cron 이 또 발행한다(2026-10-05 감사).
+        if: ${{ always() && github.event.inputs.dry_run != 'true' }}
         run: |
           git config user.name  "bsp-pulse-bot"
           git config user.email "bsp-pulse@users.noreply.github.com"

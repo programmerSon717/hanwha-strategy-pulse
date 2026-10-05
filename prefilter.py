@@ -19,8 +19,18 @@ def _norm(text: str) -> str:
 
 # ── 명백한 비(非)전략 영역 (§18 -30점, §39) ──────────────────
 _JUNK = re.compile(
-    r"연예|아이돌|가수|배우|드라마|예능|영화\s*개봉|시상식|열애|결혼설|"
+    # 2글자 낱말은 한글 경계를 요구한다 — "주가수익스왑" 의 '가수',
+    # "무엇을 배우는가" 의 '배우' 가 금융 기사를 죽였다(2026-10-05 감사).
+    r"연예|아이돌|(?<![가-힣])가수(?![가-힣])|(?<![가-힣])배우(?![가-힣])|"
+    r"드라마|예능|영화\s*개봉|시상식|열애|결혼설|"
+    # 농구·배구가 없어 구단명이 금융사인 경기 기사가 통과했다
+    # ("[26박신자컵] 삼성생명, 칼튼대학교 완파" 류 7건 이상).
     r"프로야구|야구단|한화이글스|축구|올림픽|월드컵|"
+    r"농구|배구|프로농구|여자프로농구|박신자컵|구단|"
+    # 야구단 운영 기사. 1순위 엔티티 통과를 열어 주면서 새어 들어왔다
+    # ("한화, 교육리그 출국 앞두고 한지윤 등 5명 1군 말소").
+    r"1군\s*말소|2군\s*강등|교육리그|마무리\s*캠프|스프링캠프|"
+    r"선발\s*투수|타자|타율|홈런|선수단|감독\s*선임|코치|연봉\s*협상|"
     r"맛집|레시피|여행\s*추천|날씨|미세먼지|로또|운세|별자리|"
     r"부고|인사말|신년사|골프대회|마라톤|기부\s*행사|봉사활동|"
     r"채용\s*공고|신입사원\s*모집|공모전|서포터즈"
@@ -201,8 +211,11 @@ def _build_signals() -> tuple:
         # 2~3글자 영문 약어는 단어 경계를 요구한다("AI" 가 "AIR" 에 걸리지 않게).
         short = {w for w in words if len(w) <= 3 and w.isascii()}
         plain = {w.lower() for w in words if w not in short and len(w) >= 2}
-        rx = re.compile(r"\b(" + "|".join(re.escape(w) for w in sorted(short)) + r")\b",
-                        re.I) if short else None
+        # 경계를 영문·숫자로만 본다. `\b` 는 한글 앞에서 깨져 "AI로"·"GA개혁"
+        # ·"PB센터" 가 매칭되지 않았다(2026-10-05 감사).
+        rx = re.compile(r"(?<![A-Za-z0-9])(" +
+                        "|".join(re.escape(w) for w in sorted(short)) +
+                        r")(?![A-Za-z0-9])", re.I) if short else None
         return plain, rx
 
     return split(ents), split(kws)
@@ -210,13 +223,30 @@ def _build_signals() -> tuple:
 
 (_ENT_WORDS, _ENT_SHORT), (_KW_WORDS, _KW_SHORT) = _build_signals()
 
+# 약어 중 **그 자체로 신호인 것**만 따로 둔다. AI·PB·SI·WM·GA·LP·GP 는
+# 금융 밖에서도 흔해 엔티티를 함께 요구한다(위 has_signal 주석 참고).
+_KW_STRONG_SHORT = re.compile(
+    r"(?<![A-Za-z0-9])(M&A|STO|PEF|RWA|JV|FI)(?![A-Za-z0-9])", re.I)
+
+# 발주 서칭 순서 1순위 — 그룹 전반. 계열사·오너 일가를 포함한다.
+_TIER1_RE = re.compile(
+    r"한화|김승연|김동관|김동원|김동선|캐롯|피플라이프|갤러리아|애큐온")
+
+# 범용 약어를 신호로 인정해 줄 금융 맥락.
+_FIN_CONTEXT = re.compile(
+    r"금융|은행|보험|증권|운용|투자|자산|대출|예금|연금|채권|주식|펀드"
+    r"|수수료|자본|지급여력|상장|공모|당국|금감원|금융위|핀테크|결제|송금")
+
 
 # 엔티티가 없어도 그 자체로 후보가 되는 **전략 사건** 표현.
 # 이게 있으면 다른 조건 없이 통과시킨다 — 사건이 곧 신호다.
 _EVENT_SIGNAL = re.compile(
     r"인수|매각|합병|분할|공개매수|경영권|지주사\s*전환|계열분리|"
-    r"지분\s*(인수|매각|취득|확대|처분|투자)|대주주\s*변경|"
-    r"자사주\s*(매입|소각)|주주환원|승계|출자|유상증자|무상증자|"
+    # 숫자가 끼면 공백 매칭이 깨진다 — "지분 50.54% 확보" 가 탈락했다.
+    # 제외문자에서 '.' 를 뺀다 — "지분 50.54% 확보" 의 소수점이 막았다.
+    r"지분[^,·]{0,15}?(인수|매각|취득|확보|확대|축소|처분|투자|변경|동맹|전량)|"
+    r"대주주\s*변경|"
+    r"자사주\s*(매입|소각|취득|처분|보상)|주주환원|승계|출자|유상증자|무상증자|"
     r"실사|우선협상|본계약|양해각서\s*체결|딜|바이아웃|"
     # **"품다" 계열.** 한국 금융 기사에서 인수를 가리키는 가장 흔한 동사인데
     # 빠져 있었다(2026-10-05 감사). 실측 누락: "리졸루션라이프 100% 품은
@@ -235,7 +265,16 @@ _EVENT_SIGNAL = re.compile(
     r"글로벌\s*(확장|진출|공략)|현지\s*진출|해외\s*인수전|"
     # 사명·상호 변경은 대개 지분구조 변화의 후행 신호다.
     # (실측: "교보악사자산운용 → 교보자산운용" = AXA 의 JV 철수)
-    r"사명\s*변경|상호\s*변경|브랜드\s*변경|간판\s*교체"
+    r"사명\s*변경|상호\s*변경|브랜드\s*변경|간판\s*교체|"
+    # **영문 사건 어휘.** 이게 없어 해외 보험 M&A 피드가 통째로 죽었다
+    # (2026-10-05 감사, 실측 35건). 애큐온 딜의 해외 보도도 전부 모델을
+    # 보지 못했다 — "Hanwha Life is Buying Acuon Capital" 류.
+    r"acquisitions?|acquires?|acquiring|to\s+acquire|merger|merges?|"
+    r"takeover|buy(out|ing)|stake|divest\w*|deal\s+(closes?|completion|terms)|"
+    r"joint\s+venture|regulatory\s+approval|completes?\s+acquisition|"
+    # '품다' 변형 보강
+    r"품에\s*안|품으로|삼켰|삼키|흡수합병|채웠",
+    re.I
 )
 
 # 명백한 지면 코너·공지성 말머리. 본문을 볼 것도 없다.
@@ -247,10 +286,17 @@ _BRACKET_JUNK = re.compile(
 
 # 홍보·행사·사회공헌 — 엔티티는 있지만 전략이 없는 유형.
 _SOFT_PR = re.compile(
-    r"행사\s*개최|교육\s*(실시|진행|지원)|육성|공모|서포터즈|"
+    # 아래 넷은 좁혔다(2026-10-05 감사). 넓게 두니 전략 기사를 죽였다 —
+    #   공모 → 공모채·소액공모·공모 확대 (자금조달 기사)
+    #   육성 → "카카오뱅크, 개인사업자 대출 4조 육성"
+    #   임직원 → "한화오션, 336억 자사주 취득…임직원 주식보상"
+    #   할인 → 금감원 보험료 할인 정책 기사 5건
+    r"행사\s*개최|교육\s*(실시|진행)|인재\s*육성|청년\s*육성|"
+    r"공모전|아이디어\s*공모|서포터즈|"
     r"체험단|해피|나눔|동행|봉사|후원|협약식|출범식|발대식|"
-    r"원팀|화합|소통\s*행사|임직원|직원\s*(대상|참여)|"
-    r"이벤트|프로모션|경품|사은|할인|무료\s*상담|"
+    r"원팀|화합|소통\s*행사|임직원\s*(봉사|참여|대상\s*교육|행사)|"
+    r"직원\s*(대상|참여)|"
+    r"이벤트|프로모션|경품|사은|무료\s*상담|"
     r"캠페인|공익|사회공헌|esg\s*활동|봉사활동"
 )
 
@@ -269,7 +315,13 @@ _GENERIC_KW = {
 def _hit(text: str, words: set, rx) -> bool:
     if rx and rx.search(text):
         return True
-    return any(w in text for w in words)
+    if any(w in text for w in words):
+        return True
+    # **공백을 지운 사본으로도 본다.** 키워드 목록은 "디지털 금융" 인데
+    # 기사 제목은 "디지털금융" 으로 붙여 쓴다. 이것 하나로 발주 키워드가
+    # 걸리지 않아 한화 기사가 탈락했다(2026-10-05 감사).
+    squashed = text.replace(" ", "")
+    return any(w.replace(" ", "") in squashed for w in words if " " in w)
 
 
 def has_signal(item) -> bool:
@@ -291,8 +343,27 @@ def has_signal(item) -> bool:
     if _EVENT_SIGNAL.search(text):
         return True
 
+    # **약어도 변별력으로 가른다.** 예전엔 strong 집합만 거르고 _KW_SHORT
+    # 정규식은 그대로 넘겨, `_GENERIC_KW` 에 "ai" 를 넣어도 "AI" 한 단어만
+    # 있으면 엔티티 없이 통과했다. 실측: 통과분 1,164건 중 132건이 약어
+    # 단독 통과였고 "PB 가전 10년", "치킨집 사장님도 AI" 류였다(2026-10-05).
     strong = {w for w in _KW_WORDS if w not in _GENERIC_KW}
-    if _hit(text, strong, _KW_SHORT):
+    if _hit(text, strong, _KW_STRONG_SHORT):
+        return True
+    # AI·GA·PB·WM 같은 범용 약어는 **금융 맥락이 함께 있을 때만** 신호로
+    # 친다. 무조건 막으면 "대체투자 모두 AI로" 같은 유효 기사가 죽고,
+    # 무조건 통과시키면 "PB 가전 10년" 이 들어온다(2026-10-05 감사).
+    if _KW_SHORT and _KW_SHORT.search(text) and _FIN_CONTEXT.search(text):
+        return True
+
+    # **1순위 엔티티는 주제어를 요구하지 않는다.**
+    # 발주 서칭 순서 1번이 "한화그룹 관련" 이다. 그런데 주제어 AND 조건
+    # 때문에 비금융 계열사·홍보성 한화 기사가 모델을 보지도 못하고 죽었다
+    # (groundtruth 실측 12건: UAE 대공망, 조선·방산 급성장, 세브란스 치매
+    # 케어, 협력사 대금 조기지급 …). csfit docstring 이 "한화 기사는 전략성이
+    # 낮아도 올라간다 · 비금융 계열사도 그대로 올라간다" 고 적어 둔 바로 그
+    # 유형이다. 잡음(한화이글스·채용공고)은 _JUNK 가 따로 막는다.
+    if _TIER1_RE.search(text):
         return True
 
     return (_hit(text, _ENT_WORDS, _ENT_SHORT)
