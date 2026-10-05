@@ -1268,6 +1268,76 @@ async def post_draft(client, store, pub: str, picked: list,
     return len(ids)
 
 
+def health_check(store, hours: int = 48) -> dict:
+    """초안을 갈아끼울 때마다 도는 **자가 점검.**
+
+    발주자 지정(2026-10-05): "갈아끼울 때마다 수집기사나 발행기사 중복된 거,
+    토픽 잘못 들어간 거 있으면 확인도 동시에 하면서 버그도 동시에 수정해."
+
+    여기서는 **찾아서 알린다.** 지우는 것은 사람이 tools/delete_dups.py 로
+    한다 — 자동 삭제는 오판했을 때 되돌릴 수 없다(실측으로 판정 기준을 세 번
+    고쳤다).
+    """
+    import events as _ev
+    import topics as _tp
+    now = datetime.now(KST).timestamp()
+    out = {"dup": [], "topic": [], "both": []}
+    with store._conn() as c:                                # noqa: SLF001
+        rows = c.execute(
+            "SELECT message_id, headline, main_entities, event_type,"
+            "       sent_at, primary_topic, category, mirror_ids"
+            "  FROM published"
+            " WHERE message_id IS NOT NULL AND headline IS NOT NULL"
+            "   AND sent_at > ?"
+            "   AND (cs_top10_date IS NULL OR cs_top10_date != 'DELETED-DUP')",
+            (now - hours * 3600,)).fetchall()
+
+    items = []
+    for mid, h, e, et, sa, pt, cat, mir in rows:
+        d = {"main_entities": [x.strip() for x in (e or "").split(",") if x.strip()],
+             "event_type": et, "title_ko": h}
+        items.append(dict(mid=mid, h=h, d=d, sa=sa, pt=pt, cat=cat,
+                          mir=(mir or "").strip(),
+                          cov=_ev.coverage(d, h)))
+
+    # 1) 같은 사건이 두 번 이상 발행됐나 (직접 쌍, 전이 없음)
+    for a in items:
+        for b in items:
+            if a is b or a["cov"] >= b["cov"]:
+                continue
+            if abs(float(a["sa"]) - float(b["sa"])) > 36 * 3600:
+                continue
+            if _ev.same_event(_ev.parts(a["d"], a["h"]), a["h"],
+                              _ev.parts(b["d"], b["h"]), b["h"]):
+                out["dup"].append((a["mid"], a["h"], b["mid"], b["h"]))
+                break
+
+    # 2) primary_topic 과 실제 게시 탭(category)이 어긋났나
+    for r in items:
+        if r["pt"] and r["cat"] and r["pt"] != r["cat"]:
+            out["topic"].append((r["mid"], r["pt"], r["cat"], r["h"]))
+
+    # 3) 한 기사가 두 탭에 (미러 잔재)
+    for r in items:
+        if r["mir"]:
+            out["both"].append((r["mid"], r["mir"], r["h"]))
+
+    if out["dup"]:
+        print(f"[점검] ⚠️ 같은 사건 중복 발행 {len(out['dup'])}건")
+        for mid, h, wm, wh in out["dup"][:5]:
+            print(f"   {mid} {h[:38]}")
+            print(f"     ↔ {wm} {wh[:38]}")
+    if out["topic"]:
+        print(f"[점검] ⚠️ 토픽 어긋남 {len(out['topic'])}건")
+        for mid, pt, cat, h in out["topic"][:5]:
+            print(f"   {mid} {pt} → {cat}  {h[:36]}")
+    if out["both"]:
+        print(f"[점검] ⚠️ 한 기사가 두 탭에 {len(out['both'])}건")
+    if not any(out.values()):
+        print("[점검] 중복·토픽 어긋남 없음")
+    return out
+
+
 async def build_draft(store, asof: float, dry_run: bool = False,
                       client=None) -> dict:
     """다음 발행분 초안을 만들고, **기존 초안보다 나을 때만** 갈아치운다.
@@ -1277,6 +1347,13 @@ async def build_draft(store, asof: float, dry_run: bool = False,
     """
     import time as _t
     pub = datetime.fromtimestamp(asof, KST).strftime("%Y-%m-%d")
+    # 갈아끼울 때마다 중복·토픽 어긋남을 함께 본다(2026-10-05 발주자 지정).
+    try:
+        health_check(store)
+    except Exception:                                       # noqa: BLE001
+        import traceback
+        print("[점검] 실패 —")
+        traceback.print_exc()
     picked = select_for(store, asof)
     q = quality_of(picked)
     prev = store.get_top10_draft(pub)
@@ -1319,8 +1396,16 @@ def draft_due(store, now: float | None = None) -> tuple[bool, str]:
     # 슬롯을 **분 단위로 정렬**해 두고 늦은 것부터 본다. 창은 '다음 슬롯까지'
     # 와 1시간 중 **짧은 쪽**이다. 예전엔 무조건 1시간이라, 18:50 과 19:00
     # 처럼 가까운 슬롯이 겹쳐 19:00 회차가 18:50 에 먹혔다(2026-10-05).
+    slots = list(settings.cs_top10_draft_times)
+    # 하루짜리 임시 회차를 날짜가 맞을 때만 더한다. config 주석 참고.
+    today = t.strftime("%Y-%m-%d")
+    if today == settings.cs_top10_draft_extra_date:
+        slots += settings.cs_top10_draft_extra_times
+    if today == getattr(settings, "cs_top10_draft_extra_date2", ""):
+        slots += settings.cs_top10_draft_extra_times2
+
     marks = []
-    for hhmm in settings.cs_top10_draft_times:
+    for hhmm in slots:
         hh, _, mm = hhmm.partition(":")
         try:
             marks.append((int(hh) * 60 + int(mm), hhmm))

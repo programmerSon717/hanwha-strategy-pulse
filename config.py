@@ -127,10 +127,10 @@ class Settings:
     # 밤새 두 번 더 고칠 기회가 생긴다.
     cs_top10_draft_times: list = field(default_factory=lambda: [
         t.strip() for t in
-        os.getenv("CS_TOP10_DRAFT_TIMES",
-                  # 2026-10-05 발주자 지정. 18:00 회차를 놓쳐 18:50 부터
-                  # 임시로 당겨 돌린다. 이후 19·20·22시, 다음날 04시.
-                  "18:50,19:00,20:00,22:00,04:00").split(",")
+        # 상시 초안 시각 (2026-10-05 발주자 확정):
+        #   "그 직전날 06:50 이후부터 점심 12시, 오후 6시, 오후 10시, 새벽 4시"
+        # 다음날 06:50 발행분을 네 번에 걸쳐 더 나은 것으로 갈아끼운다.
+        os.getenv("CS_TOP10_DRAFT_TIMES", "12:00,18:00,22:00,04:00").split(",")
         if t.strip()
     ])
     # 10건이 안 차면 창을 **뒤로** 넓혀 가며 다시 뽑는다 (2026-10-05 사용자 지정).
@@ -158,6 +158,27 @@ class Settings:
     # (2026-10-05 발주자 지정). 기준은 그대로다 — 같은 사건 접기·기게재
     # 제외·유료 차단·본문 확보 검사가 전부 그대로 걸린다. 넓히는 것은
     # '어디까지 볼지' 뿐이다. 실측 배경: 10/6 발행분이 2건에서 막혔다.
+    # **하루짜리 임시 추가 회차.** 오늘(10/5)은 18:00 회차를 놓쳐 저녁 내내
+    # 시간마다 갈아끼우기로 했다(2026-10-05 발주자 지정). 날짜가 맞을 때만
+    # 더해지고, 지나면 저절로 사라진다 — 상시 설정을 건드리지 않는다.
+    cs_top10_draft_extra_date: str = os.getenv(
+        "CS_TOP10_DRAFT_EXTRA_DATE", "2026-10-05")
+    cs_top10_draft_extra_times: list = field(default_factory=lambda: [
+        t.strip() for t in
+        os.getenv("CS_TOP10_DRAFT_EXTRA_TIMES",
+                  "19:15,20:00,21:00,22:00,23:00").split(",")
+        if t.strip()
+    ])
+    # 그 다음날 새벽까지 이어지는 임시 회차.
+    cs_top10_draft_extra_date2: str = os.getenv(
+        "CS_TOP10_DRAFT_EXTRA_DATE2", "2026-10-06")
+    cs_top10_draft_extra_times2: list = field(default_factory=lambda: [
+        t.strip() for t in
+        os.getenv("CS_TOP10_DRAFT_EXTRA_TIMES2",
+                  "00:00,01:00,03:00,04:00").split(",")
+        if t.strip()
+    ])
+
     cs_top10_max_fill_days: int = int(os.getenv("CS_TOP10_MAX_FILL_DAYS", "4"))
     daily_brief_count: int = int(os.getenv("DAILY_BRIEF_COUNT", "10"))
     # 같은 회사/같은 사건이 브리프를 독식하지 않게 하는 상한 (§24-6)
