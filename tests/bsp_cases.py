@@ -631,17 +631,23 @@ def test_top10_links():
         (0, row("한화생명, 애큐온캐피탈 인수", "https://ex.co/a", "hanwha_group")),
         (0, row("교보생명 스테이블코인 실증", "https://ex.co/b", "insurance_finance")),
     ]
+    # 2026-10-07 발주자 지정: "헤드라인 인스턴트뷰, 불릿, 링크 이렇게 10개를
+    # 하나의 메시지 안에 다 담아서 줘." 전에는 기사 1건당 1메시지였다.
     msgs = cstop10.render_links(picked, "2026.10.05 Sun", None)
-    check("기사 1건당 1메시지", len(msgs), 2)
-    check("1번에 번호", msgs[0][0].startswith("<b>1.</b>"), True)
-    check("2번에 번호", msgs[1][0].startswith("<b>2.</b>"), True)
-    check("카테고리 들어감", "🏢 한화그룹" in msgs[0][0], True)
-    check("제목 들어감", "애큐온캐피탈" in msgs[0][0], True)
-    check("원문 주소 들어감", "https://ex.co/a" in msgs[0][0], True)
-    check("미리보기 주소 = 원문", msgs[0][1], "https://ex.co/a")
-    check("telegra.ph 를 쓰지 않음", "telegra.ph" in msgs[0][0], False)
-    # 본문·요약은 이쪽 역할이 아니다. 📌 A팀 Top10 과 겹치면 탭이 무의미해진다.
-    check("🐧 해설이 섞이지 않음", "🐧" in msgs[0][0], False)
+    check("10건을 한 메시지에", len(msgs), 1)
+    body = msgs[0][0]
+    check("머리말이 본문 안에", body.startswith("🔗 <b>"), True)
+    check("1번에 번호", "<b>1.</b>" in body, True)
+    check("2번에 번호", "<b>2.</b>" in body, True)
+    check("제목 들어감", "애큐온캐피탈" in body, True)
+    check("둘째 기사도 같은 메시지에", "스테이블코인" in body, True)
+    check("원문 주소 들어감", "https://ex.co/a" in body, True)
+    check("미리보기 주소 = 첫 기사 원문", msgs[0][1], "https://ex.co/a")
+    # 제목은 Instant View 로 건다 — 읽는 것은 여기서 바로 되게.
+    _first = next(l for l in body.split("\n") if l.startswith("<b>1.</b>"))
+    check("제목이 링크다", "<a href=" in _first, True)
+    # 본문 해설(🐧)은 이쪽 역할이 아니다. 불릿과 링크만 담는다.
+    check("🐧 해설이 섞이지 않음", "🐧" in body, False)
     # 주소가 없는 행은 조용히 건너뛴다 — 빈 링크를 올리면 안 된다.
     check("주소 없으면 제외",
           len(cstop10.render_links([(0, row("제목만", "", "hanwha_group"))],

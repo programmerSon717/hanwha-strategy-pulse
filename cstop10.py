@@ -1085,32 +1085,74 @@ def render_item(r, url: str | None = None, iv: str | None = None,
     return "\n".join(parts)
 
 
+_BULLETS_RE = re.compile(r"📂 <b>주요 내용</b>\s*\n(<blockquote>.*?</blockquote>)",
+                         re.S)
+
+
+def _bullets_of(r) -> str:
+    """발행 원문에서 📂 주요 내용 불릿 블록만 떼어 온다. 없으면 빈 문자열."""
+    body = (r[K_TEXT] or "") if len(r) > K_TEXT else ""
+    m = _BULLETS_RE.search(body)
+    if m:
+        return m.group(1)
+    lede = (r[K_LEDE] or "").strip() if len(r) > K_LEDE else ""
+    return f"<blockquote>• {html.escape(lede)}</blockquote>" if lede else ""
+
+
 def render_links(picked: list, label: str, _store=None) -> list[tuple[str, str]]:
-    """🔗 top10(링크용) 탭에 나갈 [(본문, 미리보기주소)] — **기사 1건당 1메시지**.
+    """🔗 top10(링크용) 탭에 나갈 [(본문, 미리보기주소)].
 
-    2026-10-05 사용자 지정. 📌 A팀 Top10 과 번호가 1:1로 맞고, 그 번호로
-    본문 쪽 해설을 찾아갈 수 있어야 한다. 그래서 번호·제목·원문 주소만 넣는다.
+    발주자 지정(2026-10-07): "앞으로 top10 링크는 헤드라인 인스턴트뷰, 불릿,
+    링크 이렇게 10개를 하나의 메시지 안에 다 담아서 줘."
 
-    **한 메시지에 몰아 담지 않는다.** 텔레그램은 메시지당 미리보기 카드를
-    하나만 붙이므로(publisher.send_raw 주석), 10건을 묶으면 9건은 카드가 없는
-    맨 주소로 남는다. 한 건씩 보내야 10건 전부 카드가 뜬다.
+    그래서 한 건에 세 가지만 담는다 —
+      · 헤드라인: telegra.ph(Instant View) 로 거는 제목
+      · 불릿: 발행 원문의 📂 주요 내용 블록 그대로
+      · 링크: 원문 기사 주소(복사해서 메일·보고서에 붙이는 용도)
+    그리고 **10건을 한 메시지로 묶는다.**
 
-    주소는 **원문 기사**다 — 인스턴트뷰(telegra.ph)가 아니다. 이 탭은 복사해서
-    메일·보고서에 붙이는 용도라 telegra.ph 중계 주소는 쓸모가 없다.
-    인스턴트뷰로 읽는 건 📌 A팀 Top10 쪽 제목 링크가 한다.
+    전에는 기사 1건당 1메시지였다(2026-10-05 지정). 메시지마다 미리보기 카드가
+    하나씩 붙게 하려던 것이다. 이제는 한 덩어리로 복사하는 쪽을 택했으므로
+    카드는 맨 앞 기사 하나만 붙는다 — 맞바꾼 것이다.
+
+    실측 2,539자로 텔레그램 상한(4,096) 안에 들어간다. 그래도 넘치면
+    **내용을 깎지 않고 나눈다** — render_all 과 같은 원칙이다.
     """
     e = html.escape
-    out = []
+    pieces, urls = [], []
     for i, (_, r) in enumerate(picked, 1):
         url = gnews.resolve(r[K_URL] or "", _store)
         if not url:
             continue
-        cat = topics.display_name(r[K_PRI] or "") or ""
+        iv = _iv_url(r, url, _store) or url
         head = (r[K_HEAD] or "").strip()
-        text = (f"<b>{i}.</b> <b>[{e(cat)}]</b>\n"
-                f"{e(head)}\n"
-                f'<a href="{e(url, quote=True)}">{e(url)}</a>')
-        out.append((text, url))
+        bl = _bullets_of(r)
+        body = (f'<b>{i}.</b> <a href="{e(iv, quote=True)}"><b>{e(head)}</b></a>\n'
+                + (bl + "\n" if bl else "")
+                + f'<a href="{e(url, quote=True)}">{e(url)}</a>')
+        pieces.append(body)
+        urls.append(url)
+    if not pieces:
+        return []
+
+    head_line = (f"🔗 <b>{e(settings.bot_name)} | "
+                 f"{e(settings.cs_links_label)}</b>\n{e(label)}")
+    sep = "\n\n"
+    whole = head_line + "\n\n" + sep.join(pieces)
+    if visible_len(whole) <= SAFE_LIMIT:
+        return [(whole, urls[0])]
+
+    # 넘치면 나눈다. 기사는 쪼개지 않는다.
+    out, cur, cur_urls = [], head_line, []
+    for piece, u in zip(pieces, urls):
+        cand = cur + "\n\n" + piece
+        if cur_urls and visible_len(cand) > SAFE_LIMIT:
+            out.append((cur, cur_urls[0]))
+            cur, cur_urls = piece, [u]
+        else:
+            cur, _ = cand, cur_urls.append(u)
+    if cur_urls:
+        out.append((cur, cur_urls[0]))
     return out
 
 
@@ -1701,16 +1743,14 @@ async def post_draft(client, store, pub: str, picked: list,
 
     links_thread = topics.thread_id_for("cs_top10_links")
     if links_thread:
-        head = (f"📝 <b>{d.month}월 {d.day}일자 {settings.cs_links_label} 초안</b>"
-                f" ({stamp} 기준 · {len(picked)}건)")
-        try:
-            mid = await publisher.send_raw(client, head, links_thread)
-            if mid:
-                ids.append(("cs_top10_links", mid))
-            await asyncio.sleep(0.5)
-        except Exception as exc:                            # noqa: BLE001
-            print(f"[draft] 링크 머리말 실패 — {exc}")
-        for text, url in render_links(picked, label, store):
+        # 머리말을 따로 보내지 않는다 — 10건이 한 메시지로 나가므로 그 안에
+        # 초안 표시를 얹는다(2026-10-07 발주자 지정).
+        _banner = (f"📝 <b>{d.month}월 {d.day}일자 {settings.cs_links_label} 초안</b>"
+                   f" ({stamp} 기준 · {len(picked)}건)\n\n")
+        _links = render_links(picked, label, store)
+        if _links:
+            _links[0] = (_banner + _links[0][0], _links[0][1])
+        for text, url in _links:
             try:
                 mid = await publisher.send_raw(client, text, links_thread,
                                                preview_url=url)
@@ -2157,21 +2197,14 @@ async def run(client, store, dry_run: bool | None = None,
         store.record_agg_message("cs_top10", _ts, _id)
     if _header_id:
         store.record_agg_message("cs_top10", until - 1, _header_id)
-    # 🔗 top10(링크용) — 같은 10건의 원문 주소를 한 건씩 따로 보낸다.
+    # 🔗 top10(링크용) — 같은 10건을 **한 메시지에 묶어** 보낸다.
     # 본문 발행이 끝난 뒤에 한다. 이쪽이 실패해도 Top10 은 이미 나가 있어야 한다.
+    #
+    # 머리말을 따로 띄우지 않는다. 10건이 한 덩어리로 나가므로 본문 첫 줄이
+    # 곧 머리말이다 — 따로 보내면 결국 메시지가 둘이 된다
+    # (2026-10-07 발주자 지정: "10개를 하나의 메시지 안에 다 담아서").
     links_thread = topics.thread_id_for("cs_top10_links")
     if links_thread:
-        # 머리말을 먼저 띄운다 (2026-10-05 사용자 지정).
-        # 링크만 10건이 연달아 올라오면 어느 날짜 묶음인지, 어디서 시작하는지
-        # 알 수 없다. 날짜를 박아 묶음의 시작을 알린다.
-        _d = datetime.fromtimestamp(until, KST)
-        try:
-            await publisher.send_raw(
-                client, f"📌 <b>{_d.month}월 {_d.day}일자 {settings.cs_links_label} 발행 시작합니다</b>",
-                links_thread)
-            await asyncio.sleep(0.5)
-        except Exception as exc:                          # noqa: BLE001
-            print(f"[cstop10] 링크용 머리말 실패 — {exc}")
         sent = 0
         for i, (text, url) in enumerate(render_links(picked, label, store)):
             try:
@@ -2184,7 +2217,8 @@ async def run(client, store, dry_run: bool | None = None,
             store.record_agg_message("cs_top10_links", until + 100 + i, mid)
             sent += 1
             await asyncio.sleep(0.6)   # 텔레그램 초당 제한을 피한다
-        print(f"[cstop10] 🔗 링크용 {sent}건 발행")
+        print(f"[cstop10] 🔗 링크용 {sent}개 메시지 발행 "
+              f"({len(picked)}건을 묶어서)")
     else:
         print("[cstop10] 🔗 링크용 탭 thread_id 없음 — 건너뜀 "
               "(scripts/setup_topics.py --create 로 탭을 만들어라)")
