@@ -728,14 +728,17 @@ async def process_items(client: httpx.AsyncClient, items: list[NewsItem], warm: 
                 print(f"[중복Event] {item.title[:48]}")
                 continue
 
-        prior = store.cluster_seen(cluster_id, events.EVENT_WINDOW_SEC)
+        prior = store.cluster_seen(cluster_id, events.LOOKBACK_SEC)
         # **회차가 달라도 같은 사건이면 막는다.** cluster_seen 은 fingerprint
         # 완전일치만 본다. 모델이 같은 사건의 엔티티를 기사마다 다르게 적어
         # cluster_id 가 갈리면 그대로 또 나간다 — 아부다비 디지털금융 건이
         # 17:24 와 19:01 에 두 번 발행됐다(2026-10-05 발주자 지적).
         if not prior:
             _mine = events.parts(data, title_for_event)
-            for _h, _e, _et, _sa in store.recent_events(events.EVENT_WINDOW_SEC):
+            # **되짚는 범위는 버킷 격자보다 넓다**(events.LOOKBACK_SEC).
+            # 3일만 보던 탓에 10/01 에 나간 애큐온 딜이 10/06 에 또 나갔다 —
+            # 그 발행분이 조회에서 빠져 비교조차 못 했다(2026-10-06).
+            for _h, _e, _et, _sa in store.recent_events(events.LOOKBACK_SEC):
                 _d = {"main_entities": [x.strip() for x in (_e or "").split(",")
                                         if x.strip()],
                       "event_type": _et, "title_ko": _h}

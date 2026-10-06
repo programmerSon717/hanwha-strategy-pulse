@@ -12,6 +12,7 @@ Event fingerprint = main_entity + action + target + 시간창
 대표기사 선택 기준 (§21): Source quality > Information richness > Original reporting
                           > Latest material information
 """
+import os
 import re
 import time
 import unicodedata
@@ -19,7 +20,19 @@ import unicodedata
 from config import canonical_entity, source_weight
 
 # 같은 사건으로 볼 시간창. 딜 기사는 며칠에 걸쳐 후속보도가 나온다.
+#
+# **이 값은 fingerprint 의 시간 버킷 격자이기도 하다.** 저장된 cluster_id
+# 에 박혀 있으므로 바꾸면 과거 행과 대조가 어긋난다 — 그래서 그대로 둔다.
 EVENT_WINDOW_SEC = 3 * 24 * 3600
+
+# 회차가 달라도 같은 사건인지 **되짚어 볼 범위.** 버킷 격자와 분리한다.
+#
+# 분리한 이유(2026-10-06 발주자 지적: "애큐온건은 이미 이전에 올라갔는데
+# 왜 또 올라오냐"): 애큐온 딜은 10/01 에 처음 나갔는데 10/06 에 또 나갔다.
+# 되짚는 범위가 3일뿐이라 10/01 발행분이 **조회 대상에서 아예 빠졌다** —
+# 같은 사건인지 따져보지도 못한 것이다. 큰 딜은 일주일 넘게 후속보도가
+# 붙으므로 그만큼 되짚는다.
+LOOKBACK_SEC = int(os.getenv("EVENT_LOOKBACK_SEC", str(10 * 24 * 3600)))
 
 # 제목 유사도가 이 값 이상이면 (그것만으로) 같은 사건으로 본다.
 TITLE_SIMILARITY = 0.62
@@ -118,7 +131,18 @@ def same_event(a: tuple, title_a: str, b: tuple, title_b: str) -> bool:
     """
     ents_a, action_a, bucket_a = a
     ents_b, action_b, bucket_b = b
-    if action_a != action_b or bucket_a != bucket_b:
+    # **버킷은 이웃까지 같은 창으로 본다.**
+    #
+    # 버킷은 `time.time() // EVENT_WINDOW_SEC` 인 **절대 격자**다. 그래서
+    # 격자 경계를 넘는 순간, 엔티티와 action 이 완전히 같아도 무조건 다른
+    # 사건이 된다. 실측(2026-10-06): 애큐온 딜이 10/02 에 `한화그룹+한화생명
+    # |deal|6909`, 10/06 에 `…|6910` 으로 갈려 다시 발행됐다. 제목 유사도는
+    # 0.50 으로 멀쩡히 같은 사건이었는데 이 한 줄에서 바로 걸러졌다.
+    #
+    # 격자 자체는 없애지 않는다 — 몇 달 전 같은 회사의 다른 딜까지 묶이는
+    # 것을 막아 주기 때문이다. 대신 **이웃 격자 하나까지** 허용해 경계에
+    # 걸친 같은 사건을 살린다.
+    if action_a != action_b or abs(bucket_a - bucket_b) > 1:
         return False
     if not (ents_a & ents_b):
         # **교집합이 비어도 포기하지 않는다.** 모델이 같은 사건의 엔티티를
