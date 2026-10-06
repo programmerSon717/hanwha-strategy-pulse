@@ -199,6 +199,12 @@ _GENERIC_TOKENS = {
     # 2026-10-05 3차 감사. "글로벌·영토" 두 낱말이 변별어로 인정돼
     # 카카오뱅크 디지털자산 확장과 하나은행 해외 거점 확대가 묶였다.
     "글로벌", "영토", "거점", "진출", "확보", "필요", "주목", "추세",
+    # 2026-10-07 추가. '이어지는 사건' 을 가릴 때 업계 상용어가 고유명사
+    # 자리에 끼어들었다 — '시중은행'·'저축은행'·'업무협약' 이 3회 이상
+    # 반복됐다고 서로 다른 기사를 한 줄기로 묶었다.
+    "시중은행", "저축은행", "인터넷은행", "지방은행", "업무협약", "소상공인",
+    "상생금융", "에이전트", "종합금융투자사업자", "종투사", "자산운용사",
+    "플랫폼", "서비스", "인프라", "컨소시엄", "우선협상대상자",
     # 2026-10-05 감사 2차. 아래는 해당 분야 기사 절반에 들어가는 말인데
     # '변별력 있는 낱말' 로 인정돼 무관한 기사를 이었다.
     #   '규제' → 보험광고 규제 × 저축은행 자본적정성 규제
@@ -241,6 +247,21 @@ def _aliases_of(canon: str) -> set:
                 out.add(c)
     return out
 
+
+
+def distinctive_tokens(title: str, ents: frozenset = frozenset()) -> set:
+    """제목에서 **변별력 있는 고유 낱말**만. 일반어·행위어·엔티티명은 뺀다.
+
+    _distinctive_shared 가 두 제목을 비교할 때 쓰는 것과 같은 걸러내기를
+    제목 하나에 대해 수행한다. 이어지는 사건을 가릴 때 쓴다(2026-10-07).
+    """
+    drop = set(_GENERIC_TOKENS) | _ACTION_TOKENS
+    for e in ents:
+        drop |= _tokens(e)
+        for _al in _aliases_of(e):
+            drop |= _tokens(_al)
+    return {w for w in _tokens(title)
+            if w not in drop and len(w) >= 2 and not _NUM_TOKEN.fullmatch(w)}
 
 def _distinctive_count(a: str, b: str, ents: frozenset = frozenset()) -> int:
     """두 제목이 공유하는 **변별력 있는 낱말의 개수.**"""
@@ -411,12 +432,25 @@ MATERIAL_MARKERS = (
 )
 
 
-def looks_material(title: str, data: dict) -> bool:
-    """제목·판정에 Material Update 신호가 있는가."""
+# strict 모드에서 빼는 마커. 한국어에서 중의적이라 오판을 부른다.
+#   "인수가 낮춘"  → '인수 가격' 으로도 '인수 + 가(주격조사)' 로도 읽힌다.
+#   실측(2026-10-07): 그 탓에 제목만 새롭고 내용은 기존 반복인 애큐온 기사가
+#   '확정된 새 사실' 로 통과했다. 모델 요약에도 가격 인하 내용이 없었다.
+_AMBIGUOUS_MARKERS = {"인수가", "지분율"}
+
+
+def looks_material(title: str, data: dict, strict: bool = False) -> bool:
+    """제목·판정에 Material Update 신호가 있는가.
+
+    strict 면 중의적인 마커를 빼고 본다 — 이어지는 사건을 뚫고 들어오는
+    통로가 되므로, 그 판정에는 확실한 것만 쓴다.
+    """
     if data.get("material_update"):
         return True
     t = _norm(title)
-    return any(_norm(m) in t for m in MATERIAL_MARKERS)
+    markers = (tuple(m for m in MATERIAL_MARKERS if m not in _AMBIGUOUS_MARKERS)
+               if strict else MATERIAL_MARKERS)
+    return any(_norm(m) in t for m in markers)
 
 
 # ── 사고·피해 기사 (🚨 주요이슈 강제) ──────────────────────────

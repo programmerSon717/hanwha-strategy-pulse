@@ -7,6 +7,7 @@
 같은 기사가 양쪽에 다 나올 수 있다. 둘 다 Aggregation Topic 이라 중복 허용이다.
 """
 import html
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -371,7 +372,92 @@ def _fetchable(group: list, store) -> tuple | None:
     return None
 
 
-def issue_blocked(r, issue_used: dict, prior_issues: set) -> str | None:
+# 일반 탭에서 몇 번 되풀이돼야 '이어지는 사건' 으로 볼지.
+# 3 = 같은 낱말이 사흘 창 안에서 세 번 이상 등장. 애큐온은 10/06 하루에만
+# 네 번이었다. 2 로 내리면 흔한 표현까지 걸린다(실측).
+REPEAT_MIN = int(os.getenv("CS_TOP10_STORY_REPEAT_MIN", "3"))
+
+
+def running_story_tokens(store, since: float, days: int = 3) -> set:
+    """최근 판에 실린 기사들의 **변별력 있는 고유 낱말** 모음.
+
+    발주자 지정(2026-10-07): "5일날 터진 사건을 계속 언급하는 뉴스면 중복이니까
+    더 올릴 필요는 없단 거지. 다른 뉴스건들도 똑같은 논리로."
+
+    ISSUE_THEMES 는 미리 적어 둔 덩어리(AI·보안사고 …)만 본다. 그런데 애큐온
+    딜처럼 **이름을 미리 알 수 없는 사건**이 며칠씩 이어진다 — 10/06 하루에만
+    네 건이 나갔다. 딜 이름을 코드에 박을 수는 없으므로, 최근 판에 실린 제목의
+    고유 낱말을 모아 두고 그게 되풀이되는지로 가린다.
+    """
+    out: set = set()
+    if store is None:
+        return out
+    win = days * 24 * 3600
+
+    # ① 이미 Top10 에 실린 것 — 한 번만 나와도 '이어지는 줄기' 로 본다.
+    try:
+        for h, e, _t in store.cstop10_recent_clusters(since - win):
+            ents = frozenset(x.strip() for x in (e or "").split(",") if x.strip())
+            out |= events.distinctive_tokens(h or "", ents)
+    except Exception:
+        pass
+
+    # ② 일반 탭에서 **되풀이되고 있는** 줄기.
+    #
+    # Top10 만 보면 놓친다 — 애큐온 딜은 Top10 에 거의 안 실렸는데 일반 탭에는
+    # 10/06 하루에만 네 건이 나갔다(2026-10-07 발주자 지적). 그렇다고 일반
+    # 발행분 전체를 넣으면 수백 건의 낱말이 쌓여 멀쩡한 기사까지 막는다.
+    # 그래서 **여러 번 되풀이된 낱말만** 고른다 — 한두 번 스친 말은 사건이
+    # 아니라 그냥 흔한 표현이다.
+    seen: dict[str, int] = {}
+    try:
+        for h, e, _et, _sa in store.recent_events(win):
+            ents = frozenset(x.strip() for x in (e or "").split(",") if x.strip())
+            for w in events.distinctive_tokens(h or "", ents):
+                seen[w] = seen.get(w, 0) + 1
+    except Exception:
+        pass
+    out |= {w for w, n in seen.items() if n >= REPEAT_MIN and len(w) >= 4}
+    return out
+
+
+def running_story_blocked(r, story_tokens: set, min_overlap: int = 2) -> str | None:
+    """최근 판에서 이어지는 사건을 **또** 다루는 기사인가.
+
+    고유 낱말이 2개 이상 겹치면 같은 줄기로 본다. 1개만으로 묶으면 '한화' 하나로
+    무관한 기사가 전부 걸린다.
+
+    **확정된 새 사실은 통과시킨다** — 제재·판결·체결·불허처럼 사건이 한 단계
+    넘어간 것은 새 사건이다. 다만 '인수가' 는 마커에서 뺀다: 한국어에서
+    "인수가 낮춘" 은 '인수 가격' 으로도 '인수 + 가(주격조사)' 로도 읽혀,
+    제목만 새롭고 내용은 반복인 기사가 그대로 통과했다(2026-10-07 실측).
+    """
+    if not story_tokens:
+        return None
+    ents = frozenset(x.strip() for x in (r[K_ENT] or "").split(",") if x.strip())
+    mine = events.distinctive_tokens(r[K_HEAD] or "", ents)
+    shared = mine & story_tokens
+    # **특이한 이름 하나면 충분하다.** 겹침 개수만 세면 '동일·이어' 같은
+    # 흔한 말 두셋이 모여 무관한 기사를 막고, 정작 '애큐온캐피탈' 처럼
+    # 그 사건에만 쓰이는 이름은 하나뿐이라 통과한다(2026-10-07 실측).
+    # 네 글자 이상은 그 자체로 사건을 지목하는 이름으로 본다 — 업계
+    # 상용어는 events._GENERIC_TOKENS 에서 이미 빠져 있다.
+    strong = {w for w in shared if len(w) >= 4}
+    if not strong and len(shared) < min_overlap:
+        return None
+    _d = {"main_entities": list(ents),
+          "event_type": r[K_ETYPE] if len(r) > K_ETYPE else "",
+          "title_ko": r[K_HEAD] or ""}
+    try:
+        if events.looks_material(r[K_HEAD] or "", _d, strict=True):
+            return None
+    except Exception:
+        pass
+    return "이어지는 사건(" + "·".join(sorted(strong or shared)[:3]) + ")"
+
+
+def issue_blocked(r, issue_used: dict, prior_issues: set,
+                  story_tokens: set | None = None) -> str | None:
     """그 기사의 **사건 덩어리**가 이미 찼는가. 막히면 사유를 돌려준다.
 
     발주자 지정(2026-10-07): "AI사고, 금융권 잇단 AI 해킹사건은 어제 이미
@@ -382,6 +468,12 @@ def issue_blocked(r, issue_used: dict, prior_issues: set) -> str | None:
     서로 '다른 사건' 이기 때문이다. 하나의 사건 덩어리(csfit.ISSUE_THEMES)로
     묶어서 **판 안에서 한 건, 직전 판에 나갔으면 아예 제외** 한다.
     """
+    # ① 최근 판에서 이어지고 있는 사건을 또 다루는가(이름을 미리 모르는 건들).
+    _rs = running_story_blocked(r, story_tokens or set())
+    if _rs:
+        return _rs
+
+    # ② 미리 적어 둔 사건 덩어리.
     themes = csfit.issue_themes_of(r[K_HEAD] or "", r[K_ENT] or "")
     if not themes:
         return None
@@ -432,7 +524,8 @@ def prior_issue_themes(store, since: float, days: int = 2) -> set:
 
 
 def select(rows: list, count: int | None = None, store=None,
-           now: float | None = None, prior_issues: set | None = None) -> list:
+           now: float | None = None, prior_issues: set | None = None,
+           story_tokens: set | None = None) -> list:
     """적합도 순 Top N.
 
     같은 사건은 **한 건만** 싣는다. 저장된 cluster_id 로 1차로 묶고,
@@ -602,6 +695,7 @@ def select(rows: list, count: int | None = None, store=None,
     # 사건 덩어리 — 판 안에서 한 건, 직전 판에 나간 것은 제외(2026-10-07).
     issue_used: dict[str, int] = {}
     _prior_issues = prior_issues or set()
+    _story = story_tokens or set()
     picked, deferred = [], []
 
     # **집합론 생존자만 쓴다.** 최소배정은 범주별로 도는데, 같은 사건의
@@ -641,7 +735,7 @@ def select(rows: list, count: int | None = None, store=None,
             _th = csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or "")
             if any(theme_used.get(t, 0) >= csfit.THEME_CAP[t] for t in _th):
                 continue
-            _ib = issue_blocked(r, issue_used, _prior_issues)
+            _ib = issue_blocked(r, issue_used, _prior_issues, _story)
             if _ib:
                 print(f"[cstop10] 최소배정 제외({_ib}): {(r[K_HEAD] or '')[:34]}")
                 continue
@@ -653,7 +747,7 @@ def select(rows: list, count: int | None = None, store=None,
             # 매체 기사로 바꿔 끼우는데, 바뀐 기사가 막아야 할 이슈일 수 있다.
             # 실측(2026-10-07): 검사를 통과한 기사가 'AI 해킹 보안인재' 건으로
             # 갈아타 그대로 들어갔다.
-            _ib = issue_blocked(r, issue_used, _prior_issues)
+            _ib = issue_blocked(r, issue_used, _prior_issues, _story)
             if _ib:
                 print(f"[cstop10] 최소배정 제외({_ib}): {(r[K_HEAD] or '')[:34]}")
                 continue
@@ -689,7 +783,7 @@ def select(rows: list, count: int | None = None, store=None,
             deferred.append((sc, r))
             continue
         # 사건 덩어리 — 판 안 한 건, 직전 판에 나갔으면 제외(2026-10-07).
-        _ib = issue_blocked(r, issue_used, _prior_issues)
+        _ib = issue_blocked(r, issue_used, _prior_issues, _story)
         if _ib:
             print(f"[cstop10] 제외({_ib}): {(r[K_HEAD] or '')[:38]}")
             continue
@@ -712,7 +806,7 @@ def select(rows: list, count: int | None = None, store=None,
         if not _acceptable(got_alt[1], picked):
             continue
         sc, r = got_alt
-        _ib = issue_blocked(r, issue_used, _prior_issues)     # 갈아탄 뒤 재검사
+        _ib = issue_blocked(r, issue_used, _prior_issues, _story)     # 갈아탄 뒤 재검사
         if _ib:
             print(f"[cstop10] 제외({_ib}): {(r[K_HEAD] or '')[:38]}")
             continue
@@ -748,12 +842,12 @@ def select(rows: list, count: int | None = None, store=None,
         _head = _ents[0] if _ents else (r[K_PRI] or "_")
         if used.get(_head, 0) >= settings.daily_brief_max_per_entity:
             continue
-        if issue_blocked(r, issue_used, _prior_issues):
+        if issue_blocked(r, issue_used, _prior_issues, _story):
             continue
         got_alt = _fetchable(groups.get(idx_of.get(id(r), -1), [(sc, r)]), store)
         if got_alt is None or not _acceptable(got_alt[1], picked):
             continue
-        if issue_blocked(got_alt[1], issue_used, _prior_issues):   # 갈아탄 뒤
+        if issue_blocked(got_alt[1], issue_used, _prior_issues, _story):   # 갈아탄 뒤
             continue
         picked.append(got_alt)
         mark_issue(got_alt[1], issue_used)
@@ -1115,7 +1209,8 @@ def fold_by_event(rows: list) -> list:
 
 def topup(picked: list, rows: list, store, now: float, want: int,
           prior=None, ignore_cat_cap: bool = False,
-          min_fit: int | None = None, prior_issues: set | None = None) -> list:
+          min_fit: int | None = None, prior_issues: set | None = None,
+          story_tokens: set | None = None) -> list:
     """부족분을 **전날 기사에서 한 건씩 채운다.** 이미 뽑은 건 건드리지 않는다.
 
     2026-10-05 사용자 지정: "72시간까지 뽑지 말고, 그 전날 기사 중에 그나마
@@ -1143,6 +1238,7 @@ def topup(picked: list, rows: list, store, now: float, want: int,
     theme_used: dict[str, int] = {}
     issue_used: dict[str, int] = {}
     _prior_issues = prior_issues or set()
+    _story = story_tokens or set()
     for sc, r in picked:
         mark_issue(r, issue_used)
         ents = [e for e in (r[K_ENT] or "").split(",") if e]
@@ -1212,7 +1308,7 @@ def topup(picked: list, rows: list, store, now: float, want: int,
         _themes = csfit.themes_of(r[K_HEAD] or "", r[K_ENT] or "")
         if any(theme_used.get(t, 0) >= csfit.THEME_CAP[t] for t in _themes):
             continue
-        _ib = issue_blocked(r, issue_used, _prior_issues)
+        _ib = issue_blocked(r, issue_used, _prior_issues, _story)
         if _ib:
             print(f"[cstop10] 보충 제외({_ib}): {(r[K_HEAD] or '')[:34]}")
             continue
@@ -1311,7 +1407,8 @@ def drop_before_window(rows: list, since: float) -> list:
 
 def fill_in_window(picked: list, rows: list, store, want: int,
                    prior=None, since: float | None = None,
-                   prior_issues: set | None = None) -> list:
+                   prior_issues: set | None = None,
+                   story_tokens: set | None = None) -> list:
     """**창 안에서** 남은 자리를 채운다. 마지막 수단이다.
 
     발주자 지정(2026-10-05): "무조건 10/6 06:50 에 올라가는 완성본은 10/05
@@ -1330,6 +1427,7 @@ def fill_in_window(picked: list, rows: list, store, want: int,
     used_art = store.top10_article_keys() if store is not None else set()
     issue_used: dict[str, int] = {}
     _prior_issues = prior_issues or set()
+    _story = story_tokens or set()
     for _sc, q in picked:
         mark_issue(q, issue_used)
         _k = article_key(q[K_URL] or "")
@@ -1380,7 +1478,7 @@ def fill_in_window(picked: list, rows: list, store, want: int,
             continue
         # 사건 덩어리는 상한을 풀어도 지킨다 — 어제 나간 이슈가 되돌아오면
         # 자리를 채운 의미가 없다(2026-10-07 발주자 지적).
-        _ib = issue_blocked(r, issue_used, _prior_issues)
+        _ib = issue_blocked(r, issue_used, _prior_issues, _story)
         if _ib:
             print(f"[cstop10] 창 안 보충 제외({_ib}): {(r[K_HEAD] or '')[:32]}")
             continue
@@ -1443,9 +1541,11 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
     rows = drop_stale(rows, origin_floor_day(since))
     rows = drop_before_window(rows, since)
     _pi = prior_issue_themes(store, since)
+    _st = running_story_tokens(store, since)
     if _pi:
         print(f"[cstop10] 직전 판 이슈 제외 대상: {', '.join(sorted(_pi))}")
-    picked = select(rows, store=store, now=asof, prior_issues=_pi)
+    picked = select(rows, store=store, now=asof, prior_issues=_pi,
+                    story_tokens=_st)
     if len(picked) < want:
         # **일반 탭에 나간 것은 제외 근거가 아니다.** Top10 은 원래 "그날
         # 팀에 나간 것 중의 Top10" 이다. 일반탭 발행을 기게재로 치니 창 안
@@ -1455,7 +1555,8 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
         # 그건 cstop10_recent_clusters(이전 Top10)가 담당한다.
         _prior = store.cstop10_recent_clusters(since - 2 * 24 * 3600)
         picked = topup(picked, rows, store, asof, want, prior=_prior,
-                       ignore_cat_cap=True, prior_issues=_pi)
+                       ignore_cat_cap=True, prior_issues=_pi,
+                       story_tokens=_st)
     day = 24 * 3600
     back = 0
     while len(picked) < want and back < settings.cs_top10_fill_days:
@@ -1491,7 +1592,7 @@ def select_for(store, asof: float, by_origin: bool = False) -> list:
     picked = fill_in_window(picked, rows, store, want,
                             prior=store.cstop10_recent_clusters(
                                 since - 2 * day), since=since,
-                            prior_issues=_pi)
+                            prior_issues=_pi, story_tokens=_st)
     return picked
 
 
@@ -1834,9 +1935,11 @@ async def run(client, store, dry_run: bool | None = None,
         rows = drop_stale(rows, origin_floor_day(since))
         rows = drop_before_window(rows, since)
         _pi = prior_issue_themes(store, since)
+        _st = running_story_tokens(store, since)
         if _pi:
             print(f"[cstop10] 직전 판 이슈 제외 대상: {', '.join(sorted(_pi))}")
-        return rows, select(rows, store=store, now=asof, prior_issues=_pi)
+        return rows, select(rows, store=store, now=asof, prior_issues=_pi,
+                            story_tokens=_st)
 
     # **확정된 초안이 있으면 그걸 그대로 낸다.**
     # 전날 18:00·22:00·당일 04:00 에 미리 만들어 검증해 둔 것이다. 06:50 에
@@ -1945,7 +2048,8 @@ async def run(client, store, dry_run: bool | None = None,
     picked = fill_in_window(
         picked, rows, store, want,
         prior=store.cstop10_recent_clusters(since - 2 * 24 * 3600),
-        since=since, prior_issues=prior_issue_themes(store, since))
+        since=since, prior_issues=prior_issue_themes(store, since),
+        story_tokens=running_story_tokens(store, since))
 
     if len(picked) < want:
         print(f"[cstop10] ⚠️ 경고 — {settings.cs_top10_max_fill_days}일 전까지 "
